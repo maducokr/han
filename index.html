@@ -7,18 +7,6 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>한글 · 섬 슬롯</title>
   <script src="https://sdk.minepi.com/pi-sdk.js"></script>
-  <script>
-    (function () {
-      var host = location.hostname;
-      window.__PI_SANDBOX__ =
-        host === "localhost" ||
-        host === "127.0.0.1" ||
-        host.endsWith(".github.io");
-      if (typeof Pi !== "undefined" && Pi.init) {
-        Pi.init({ version: "2.0", sandbox: !!window.__PI_SANDBOX__ });
-      }
-    })();
-  </script>
   <style>
     :root {
       --bg: #0a1628;
@@ -59,6 +47,10 @@
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    [hidden] {
+      display: none !important;
+    }
 
     body {
       min-height: 100dvh;
@@ -138,26 +130,31 @@
 
     .subtitle-pill strong { color: var(--gold); font-weight: 800; }
 
-    .pi-auth {
+    .pi-bar {
       display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
+      flex-direction: column;
       align-items: center;
-      gap: var(--gap-xs);
       width: 100%;
+      padding: 0 var(--pad-in) var(--gap-xs);
+      flex-shrink: 0;
+      gap: var(--gap-xs);
     }
 
     .pi-login-btn {
+      width: var(--reels-width);
+      max-width: 100%;
+      margin: 0 auto;
       font-size: var(--btn-fs);
       font-weight: 800;
       padding: var(--btn-pad-y) var(--btn-pad-x);
-      border-radius: 999px;
+      border-radius: 10px;
       border: 1.5px solid #6b21a8;
       background: linear-gradient(180deg, #c084fc 0%, #9333ea 100%);
       color: #fff;
       cursor: pointer;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+      box-shadow: 0 3px 0 #6b21a8, 0 2px 6px rgba(0, 0, 0, 0.25);
       letter-spacing: 0.03em;
+      flex-shrink: 0;
     }
 
     .pi-login-btn:disabled {
@@ -170,27 +167,10 @@
       color: #f3e8ff;
       border-color: rgba(192, 132, 252, 0.55);
       background: linear-gradient(180deg, rgba(147, 51, 234, 0.35) 0%, rgba(19, 34, 56, 0.55) 100%);
-    }
-
-    .machine.pi-locked {
-      position: relative;
-      pointer-events: none;
-      opacity: 0.62;
-    }
-
-    .machine.pi-locked::before {
-      content: "Pi 로그인 후 플레이";
-      position: absolute;
-      inset: 0;
-      z-index: 5;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: clamp(0.72rem, 3vw, 0.88rem);
-      font-weight: 800;
-      color: var(--gold);
-      text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
-      pointer-events: none;
+      width: var(--reels-width);
+      max-width: 100%;
+      margin: 0 auto;
+      text-align: center;
     }
 
     .hud {
@@ -261,6 +241,7 @@
       min-height: 0;
       display: flex;
       flex-direction: column;
+      gap: var(--gap-xs);
       background: linear-gradient(180deg, rgba(42, 31, 10, 0.35) 0%, rgba(19, 34, 56, 0.6) 100%);
       border-top: 1px solid rgba(244, 196, 48, 0.2);
       padding: var(--pad-in);
@@ -281,15 +262,22 @@
       flex-direction: column;
       align-items: center;
       width: 100%;
+      min-height: calc(var(--reel-h) + 1.5rem);
     }
 
     .grid-label {
+      display: inline-block;
       text-align: center;
-      font-size: 0.58rem;
+      font-size: clamp(0.62rem, 2.6vw, 0.75rem);
+      font-weight: 800;
       color: var(--gold);
-      opacity: 0.85;
-      margin-bottom: 0.15rem;
-      letter-spacing: 0.08em;
+      margin-bottom: 0.2rem;
+      letter-spacing: 0.1em;
+      padding: 0.12rem 0.55rem;
+      border-radius: 999px;
+      border: 1px solid rgba(244, 196, 48, 0.45);
+      background: rgba(244, 196, 48, 0.12);
+      flex-shrink: 0;
     }
 
     .payline {
@@ -684,16 +672,17 @@
     <header class="game-header">
       <h1 class="status-pill title-pill">한글 · 섬 슬롯</h1>
       <p class="status-pill subtitle-pill">3칸 슬롯 · 두꺼비 · 섬 · 배당 <strong>KR</strong> · 3개 일치 시 발음 5회!</p>
-      <div class="pi-auth" id="piAuthBar">
-        <button type="button" class="pi-login-btn" id="piLoginBtn">Pi 로그인</button>
-        <span class="status-pill pi-user-pill" id="piUserProfile" hidden></span>
-      </div>
     </header>
 
     <div class="hud">
       <div class="stat stat--coin"><label>CASH</label><span id="balance"></span></div>
       <div class="stat"><label>BET</label><span id="betDisplay"></span></div>
       <div class="stat"><label>WIN</label><span id="lastWin"></span></div>
+    </div>
+
+    <div class="pi-bar" id="piPlayRow" hidden>
+      <button type="button" class="pi-login-btn" id="piLoginBtn">Pi 로그인 후 플레이</button>
+      <span class="status-pill pi-user-pill" id="piUserProfile" hidden></span>
     </div>
 
     <div class="machine" id="machine">
@@ -783,8 +772,50 @@
 
     let piConnected = false;
     let piUser = null;
-    let PiSdkBaseClass = null;
+    let piAccessToken = null;
     let piService = null;
+    let piSdkReady = false;
+    let piLoginBusy = false;
+    let piInitDone = false;
+    let piInitPromise = null;
+    const PI_CONNECT_TIMEOUT_MS = 45000;
+
+    /** sandbox: 로컬 또는 ?sandbox=1 일 때만 (github.io는 프로덕션) */
+    function isPiSandboxMode() {
+      const qs = new URLSearchParams(location.search);
+      if (qs.has("sandbox")) {
+        const v = qs.get("sandbox");
+        return v !== "0" && v !== "false";
+      }
+      const host = location.hostname;
+      return host === "localhost" || host === "127.0.0.1";
+    }
+
+    function ensurePiInitialized() {
+      if (!window.Pi || typeof window.Pi.init !== "function") {
+        return Promise.reject(new Error("Pi Browser에서 앱을 열어 주세요."));
+      }
+      if (piInitDone) return Promise.resolve();
+      if (piInitPromise) return piInitPromise;
+
+      const sandbox = isPiSandboxMode();
+      piInitPromise = Promise.resolve(
+        window.Pi.init({ version: "2.0", sandbox })
+      )
+        .then(() => {
+          piInitDone = true;
+          console.info("[Pi] initialized", { sandbox, host: location.hostname });
+        })
+        .catch((err) => {
+          piInitPromise = null;
+          throw err;
+        });
+      return piInitPromise;
+    }
+
+    function onIncompletePaymentFound(payment) {
+      console.warn("[Pi] incomplete payment:", payment?.identifier);
+    }
 
     let SYMBOL_H = 56;
     const REEL_COUNT = 3;
@@ -820,46 +851,24 @@
     }
 
     /**
-     * PiService — Pi Network 인증 및 결제 연동
+     * PiService — window.Pi 공식 API 직접 사용
      */
     class PiService {
-      constructor(PiSdkBase) {
-        this.client = new PiSdkBase();
-        this.user = null;
-        this.client.onConnection = () => {
-          this.user = PiSdkBase.user;
-          piConnected = !!PiSdkBase.connected;
-          piUser = this.user;
-          onPiAuthenticated();
-        };
-      }
-
-      onIncompletePaymentFound(payment) {
-        console.warn("Incomplete payment found:", payment?.identifier);
-        if (PiSdkBaseClass?.onIncompletePaymentFound) {
-          PiSdkBaseClass.onIncompletePaymentFound(payment);
-        }
-      }
-
       async login() {
-        try {
-          if (window.__PI_SANDBOX__) window.RAILS_ENV = "development";
-          await this.client.connect();
-          if (PiSdkBaseClass.connected && PiSdkBaseClass.user) {
-            this.user = PiSdkBaseClass.user;
-            const accessToken = PiSdkBaseClass.accessToken;
-            await verifyPiAccessToken(accessToken);
-            return {
-              success: true,
-              accessToken,
-              user: this.user,
-            };
-          }
-          return { success: false, error: "Pi 연결에 실패했습니다." };
-        } catch (error) {
-          console.error("Authentication Error:", error);
-          return { success: false, error: error?.message || String(error) };
+        await ensurePiInitialized();
+        const auth = await window.Pi.authenticate(
+          ["username", "payments"],
+          onIncompletePaymentFound
+        );
+        if (!auth?.accessToken || !auth?.user) {
+          throw new Error("인증 응답이 올바르지 않습니다.");
         }
+        piAccessToken = auth.accessToken;
+        return {
+          success: true,
+          accessToken: auth.accessToken,
+          user: auth.user,
+        };
       }
     }
 
@@ -886,23 +895,30 @@
       return !requiresPiAuth() || piConnected;
     }
 
+    const piPlayRow = document.getElementById("piPlayRow");
     const piLoginBtn = document.getElementById("piLoginBtn");
     const piUserProfile = document.getElementById("piUserProfile");
 
     function updatePiUI(connected) {
       const isConn = connected ?? piConnected;
+      const inPi = requiresPiAuth();
+      if (piPlayRow) {
+        piPlayRow.hidden = !inPi;
+      }
       if (piLoginBtn) {
         piLoginBtn.hidden = isConn;
-        piLoginBtn.disabled = !window.Pi;
+        piLoginBtn.disabled = isConn || !window.Pi || !piSdkReady || piLoginBusy;
+        if (!isConn && piSdkReady && !piLoginBusy) {
+          piLoginBtn.textContent = "Pi 로그인 후 플레이";
+        } else if (!isConn && !piSdkReady && !piLoginBusy) {
+          piLoginBtn.textContent = "준비 중…";
+        }
       }
       if (piUserProfile) {
         piUserProfile.hidden = !isConn;
         if (isConn && piUser?.username) {
           piUserProfile.textContent = `@${piUser.username}`;
         }
-      }
-      if (machineEl) {
-        machineEl.classList.toggle("pi-locked", requiresPiAuth() && !isConn);
       }
     }
 
@@ -917,7 +933,14 @@
     }
 
     async function handlePiLogin(silent) {
-      if (!piService) return;
+      if (piLoginBusy) return;
+      if (!piService) {
+        if (!silent) {
+          messageEl.textContent = "Pi SDK를 불러오는 중입니다. 잠시 후 다시 시도해 주세요.";
+          messageEl.className = "message";
+        }
+        return;
+      }
       if (!window.Pi) {
         if (!silent) {
           messageEl.innerHTML =
@@ -927,45 +950,84 @@
         updatePiUI(false);
         return;
       }
-      if (piLoginBtn) {
+
+      piLoginBusy = true;
+      if (!silent && piLoginBtn) {
         piLoginBtn.disabled = true;
         piLoginBtn.textContent = "연결 중…";
       }
-      const result = await piService.login(["username", "payments"]);
-      if (result.success) {
-        piConnected = true;
-        piUser = result.user;
-        onPiAuthenticated();
-      } else {
+
+      try {
+        const result = await Promise.race([
+          piService.login(),
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("연결 시간이 초과되었습니다. 버튼을 다시 눌러 주세요.")),
+              PI_CONNECT_TIMEOUT_MS
+            )
+          ),
+        ]);
+        if (result.success) {
+          piConnected = true;
+          piUser = result.user;
+          await verifyPiAccessToken(result.accessToken);
+          onPiAuthenticated();
+        } else {
+          piConnected = false;
+          piUser = null;
+          piAccessToken = null;
+          updatePiUI(false);
+          if (!silent) {
+            const mode = isPiSandboxMode() ? "sandbox" : "production";
+            messageEl.textContent =
+              "로그인 실패: " + (result.error || "알 수 없는 오류") + ` (${mode})`;
+            messageEl.className = "message lose";
+          }
+        }
+      } catch (error) {
         piConnected = false;
         piUser = null;
+        piAccessToken = null;
         updatePiUI(false);
         if (!silent) {
-          messageEl.textContent = "로그인 실패: " + (result.error || "알 수 없는 오류");
+          const mode = isPiSandboxMode() ? "sandbox" : "production";
+          const msg = error?.message || "로그인에 실패했습니다.";
+          messageEl.textContent = `${msg} (${mode} 모드)`;
           messageEl.className = "message lose";
         }
-      }
-      if (piLoginBtn) {
-        piLoginBtn.disabled = !window.Pi;
-        piLoginBtn.textContent = "Pi 로그인";
+        console.warn("Pi login:", error);
+      } finally {
+        piLoginBusy = false;
+        if (piLoginBtn && !piConnected) {
+          piLoginBtn.disabled = !window.Pi || !piSdkReady;
+          piLoginBtn.textContent = "Pi 로그인 후 플레이";
+        }
       }
     }
 
     async function initPiSdk() {
+      if (!requiresPiAuth()) {
+        piSdkReady = true;
+        return;
+      }
       try {
-        const mod = await import(
-          "https://cdn.jsdelivr.net/npm/@pinetwork/pi-sdk-js@2.0.0/dist/index.js"
-        );
-        PiSdkBaseClass = mod.PiSdkBase;
-        piService = new PiService(PiSdkBaseClass);
+        piService = new PiService();
         window.piService = piService;
         updatePiUI(false);
-        if (window.Pi) {
-          await handlePiLogin(true);
-        }
+        await ensurePiInitialized();
+        piSdkReady = true;
+        updatePiUI(false);
       } catch (err) {
-        console.error("Pi SDK load failed:", err);
-        if (piLoginBtn) piLoginBtn.disabled = true;
+        console.error("Pi init failed:", err);
+        piSdkReady = false;
+        if (piLoginBtn) {
+          piLoginBtn.disabled = false;
+          piLoginBtn.textContent = "Pi 로그인 후 플레이";
+        }
+        if (messageEl) {
+          messageEl.textContent = err?.message || "Pi SDK 초기화 실패";
+          messageEl.className = "message lose";
+        }
       }
     }
 
@@ -1390,12 +1452,15 @@
         symbols.forEach((sym) => stripEl.appendChild(renderSymbolEl(sym)));
         reel.appendChild(stripEl);
         reelsEl.appendChild(reel);
-        positionReel(r, false);
       }
+      syncSymbolHeight();
+      for (let r = 0; r < REEL_COUNT; r++) positionReel(r, false);
     }
 
     function positionReel(reelIndex, animate, durationMs) {
+      syncSymbolHeight();
       const reel = reelsEl.children[reelIndex];
+      if (!reel) return 0;
       const strip = reel.querySelector(".reel-strip");
       const y = -reelOffsets[reelIndex] * SYMBOL_H;
       const dur = durationMs ?? SPIN_MS + reelIndex * 450;
@@ -1596,13 +1661,15 @@
       }, 120);
     }
 
-    initPiSdk().then(() => {
+    function bootGame() {
       initReels();
-      syncSymbolHeight();
       setLastWin(0);
       updateHud();
       updateControls();
-    });
+    }
+
+    bootGame();
+    initPiSdk();
     window.addEventListener("resize", onViewportChange);
     window.addEventListener("orientationchange", onViewportChange);
     if (window.visualViewport) {
