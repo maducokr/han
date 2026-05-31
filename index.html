@@ -135,7 +135,8 @@
       flex-direction: column;
       align-items: center;
       width: 100%;
-      padding: 0 var(--pad-in) var(--gap-xs);
+      margin-top: auto;
+      padding: var(--gap-xs) var(--pad-in) max(var(--pad-in), var(--safe-b));
       flex-shrink: 0;
       gap: var(--gap-xs);
     }
@@ -680,11 +681,6 @@
       <div class="stat"><label>WIN</label><span id="lastWin"></span></div>
     </div>
 
-    <div class="pi-bar" id="piPlayRow" hidden>
-      <button type="button" class="pi-login-btn" id="piLoginBtn">Pi 로그인 후 플레이</button>
-      <span class="status-pill pi-user-pill" id="piUserProfile" hidden></span>
-    </div>
-
     <div class="machine" id="machine">
     <div class="reels-wrap">
       <p class="grid-label">3 × 3</p>
@@ -719,6 +715,11 @@
       </div>
     </div>
     <p class="message" id="message">가운데 <strong>3칸</strong> 모두 일치 시 <strong>KR</strong> 지급 + 발음 5회</p>
+    </div>
+
+    <div class="pi-bar" id="piPlayRow" hidden>
+      <button type="button" class="pi-login-btn" id="piLoginBtn">Pi 로그인 후 플레이</button>
+      <span class="status-pill pi-user-pill" id="piUserProfile" hidden></span>
     </div>
   </div>
 
