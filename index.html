@@ -6,6 +6,19 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>한글 · 섬 슬롯</title>
+  <script src="https://sdk.minepi.com/pi-sdk.js"></script>
+  <script>
+    (function () {
+      var host = location.hostname;
+      window.__PI_SANDBOX__ =
+        host === "localhost" ||
+        host === "127.0.0.1" ||
+        host.endsWith(".github.io");
+      if (typeof Pi !== "undefined" && Pi.init) {
+        Pi.init({ version: "2.0", sandbox: !!window.__PI_SANDBOX__ });
+      }
+    })();
+  </script>
   <style>
     :root {
       --bg: #0a1628;
@@ -124,6 +137,61 @@
     }
 
     .subtitle-pill strong { color: var(--gold); font-weight: 800; }
+
+    .pi-auth {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: center;
+      gap: var(--gap-xs);
+      width: 100%;
+    }
+
+    .pi-login-btn {
+      font-size: var(--btn-fs);
+      font-weight: 800;
+      padding: var(--btn-pad-y) var(--btn-pad-x);
+      border-radius: 999px;
+      border: 1.5px solid #6b21a8;
+      background: linear-gradient(180deg, #c084fc 0%, #9333ea 100%);
+      color: #fff;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+      letter-spacing: 0.03em;
+    }
+
+    .pi-login-btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .pi-user-pill {
+      font-size: var(--pill-fs-sub);
+      color: #f3e8ff;
+      border-color: rgba(192, 132, 252, 0.55);
+      background: linear-gradient(180deg, rgba(147, 51, 234, 0.35) 0%, rgba(19, 34, 56, 0.55) 100%);
+    }
+
+    .machine.pi-locked {
+      position: relative;
+      pointer-events: none;
+      opacity: 0.62;
+    }
+
+    .machine.pi-locked::before {
+      content: "Pi 로그인 후 플레이";
+      position: absolute;
+      inset: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: clamp(0.72rem, 3vw, 0.88rem);
+      font-weight: 800;
+      color: var(--gold);
+      text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+      pointer-events: none;
+    }
 
     .hud {
       display: flex;
@@ -616,6 +684,10 @@
     <header class="game-header">
       <h1 class="status-pill title-pill">한글 · 섬 슬롯</h1>
       <p class="status-pill subtitle-pill">3칸 슬롯 · 두꺼비 · 섬 · 배당 <strong>KR</strong> · 3개 일치 시 발음 5회!</p>
+      <div class="pi-auth" id="piAuthBar">
+        <button type="button" class="pi-login-btn" id="piLoginBtn">Pi 로그인</button>
+        <span class="status-pill pi-user-pill" id="piUserProfile" hidden></span>
+      </div>
     </header>
 
     <div class="hud">
@@ -706,6 +778,14 @@
     const INITIAL_BALANCE = 1000;
     const FREE_BONUS = 1000;
     const STORAGE_KEY = "hangul-slot-kr-balance";
+    /** 백엔드 토큰 검증 URL (설정 시 accessToken POST 전송) */
+    window.PI_AUTH_VERIFY_URL = window.PI_AUTH_VERIFY_URL || "";
+
+    let piConnected = false;
+    let piUser = null;
+    let PiSdkBaseClass = null;
+    let piService = null;
+
     let SYMBOL_H = 56;
     const REEL_COUNT = 3;
     const VISIBLE = 3;
@@ -717,9 +797,14 @@
       return `${n.toLocaleString("ko-KR")} <span class="kr-unit">${COIN_LABEL}</span>`;
     }
 
+    function getBalanceStorageKey() {
+      const id = piUser?.username || piUser?.uid;
+      return id ? `${STORAGE_KEY}-${id}` : STORAGE_KEY;
+    }
+
     function loadBalance() {
       try {
-        const saved = localStorage.getItem(STORAGE_KEY);
+        const saved = localStorage.getItem(getBalanceStorageKey());
         if (saved !== null) {
           const n = parseInt(saved, 10);
           if (!Number.isNaN(n) && n >= 0) return n;
@@ -730,8 +815,158 @@
 
     function saveBalance() {
       try {
-        localStorage.setItem(STORAGE_KEY, String(balance));
+        localStorage.setItem(getBalanceStorageKey(), String(balance));
       } catch (_) {}
+    }
+
+    /**
+     * PiService — Pi Network 인증 및 결제 연동
+     */
+    class PiService {
+      constructor(PiSdkBase) {
+        this.client = new PiSdkBase();
+        this.user = null;
+        this.client.onConnection = () => {
+          this.user = PiSdkBase.user;
+          piConnected = !!PiSdkBase.connected;
+          piUser = this.user;
+          onPiAuthenticated();
+        };
+      }
+
+      onIncompletePaymentFound(payment) {
+        console.warn("Incomplete payment found:", payment?.identifier);
+        if (PiSdkBaseClass?.onIncompletePaymentFound) {
+          PiSdkBaseClass.onIncompletePaymentFound(payment);
+        }
+      }
+
+      async login() {
+        try {
+          if (window.__PI_SANDBOX__) window.RAILS_ENV = "development";
+          await this.client.connect();
+          if (PiSdkBaseClass.connected && PiSdkBaseClass.user) {
+            this.user = PiSdkBaseClass.user;
+            const accessToken = PiSdkBaseClass.accessToken;
+            await verifyPiAccessToken(accessToken);
+            return {
+              success: true,
+              accessToken,
+              user: this.user,
+            };
+          }
+          return { success: false, error: "Pi 연결에 실패했습니다." };
+        } catch (error) {
+          console.error("Authentication Error:", error);
+          return { success: false, error: error?.message || String(error) };
+        }
+      }
+    }
+
+    async function verifyPiAccessToken(accessToken) {
+      const url = window.PI_AUTH_VERIFY_URL;
+      if (!url || !accessToken) return;
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ accessToken }),
+        });
+        if (!res.ok) console.warn("Pi token verify failed:", res.status);
+      } catch (err) {
+        console.warn("Pi token verify error:", err);
+      }
+    }
+
+    function requiresPiAuth() {
+      return typeof window.Pi !== "undefined";
+    }
+
+    function isPlayAllowed() {
+      return !requiresPiAuth() || piConnected;
+    }
+
+    const piLoginBtn = document.getElementById("piLoginBtn");
+    const piUserProfile = document.getElementById("piUserProfile");
+
+    function updatePiUI(connected) {
+      const isConn = connected ?? piConnected;
+      if (piLoginBtn) {
+        piLoginBtn.hidden = isConn;
+        piLoginBtn.disabled = !window.Pi;
+      }
+      if (piUserProfile) {
+        piUserProfile.hidden = !isConn;
+        if (isConn && piUser?.username) {
+          piUserProfile.textContent = `@${piUser.username}`;
+        }
+      }
+      if (machineEl) {
+        machineEl.classList.toggle("pi-locked", requiresPiAuth() && !isConn);
+      }
+    }
+
+    function onPiAuthenticated() {
+      balance = loadBalance();
+      updatePiUI(true);
+      updateHud();
+      updateControls();
+      const name = piUser?.username || "Pi 사용자";
+      messageEl.innerHTML = `Pi 로그인 · <strong>${name}</strong>님 환영합니다!`;
+      messageEl.className = "message";
+    }
+
+    async function handlePiLogin(silent) {
+      if (!piService) return;
+      if (!window.Pi) {
+        if (!silent) {
+          messageEl.innerHTML =
+            "Pi Browser에서 앱을 열어 <strong>Pi 로그인</strong>을 진행해 주세요.";
+          messageEl.className = "message";
+        }
+        updatePiUI(false);
+        return;
+      }
+      if (piLoginBtn) {
+        piLoginBtn.disabled = true;
+        piLoginBtn.textContent = "연결 중…";
+      }
+      const result = await piService.login(["username", "payments"]);
+      if (result.success) {
+        piConnected = true;
+        piUser = result.user;
+        onPiAuthenticated();
+      } else {
+        piConnected = false;
+        piUser = null;
+        updatePiUI(false);
+        if (!silent) {
+          messageEl.textContent = "로그인 실패: " + (result.error || "알 수 없는 오류");
+          messageEl.className = "message lose";
+        }
+      }
+      if (piLoginBtn) {
+        piLoginBtn.disabled = !window.Pi;
+        piLoginBtn.textContent = "Pi 로그인";
+      }
+    }
+
+    async function initPiSdk() {
+      try {
+        const mod = await import(
+          "https://cdn.jsdelivr.net/npm/@pinetwork/pi-sdk-js@2.0.0/dist/index.js"
+        );
+        PiSdkBaseClass = mod.PiSdkBase;
+        piService = new PiService(PiSdkBaseClass);
+        window.piService = piService;
+        updatePiUI(false);
+        if (window.Pi) {
+          await handlePiLogin(true);
+        }
+      } catch (err) {
+        console.error("Pi SDK load failed:", err);
+        if (piLoginBtn) piLoginBtn.disabled = true;
+      }
     }
 
     const Sfx = (() => {
@@ -1034,13 +1269,14 @@
     const freeBtn = document.getElementById("freeBtn");
 
     function updateControls() {
-      spinBtn.disabled = spinning || autoMode;
-      autoBtn.disabled = spinning || autoMode || balance < bet;
+      const locked = !isPlayAllowed();
+      spinBtn.disabled = locked || spinning || autoMode;
+      autoBtn.disabled = locked || spinning || autoMode || balance < bet;
       autoBtn.classList.toggle("active", autoMode);
       stopBtn.disabled = !autoMode && !spinning;
-      depositBtn.disabled = spinning || autoMode;
-      withdrawBtn.disabled = spinning || autoMode || balance < bankAmount;
-      freeBtn.disabled = spinning || autoMode;
+      depositBtn.disabled = locked || spinning || autoMode;
+      withdrawBtn.disabled = locked || spinning || autoMode || balance < bankAmount;
+      freeBtn.disabled = locked || spinning || autoMode;
       document.querySelectorAll(".bet-btn").forEach((b) => {
         b.disabled = spinning || autoMode;
       });
@@ -1105,7 +1341,7 @@
     }
 
     function startAuto() {
-      if (spinning || autoMode || balance < bet) return;
+      if (!isPlayAllowed() || spinning || autoMode || balance < bet) return;
       Sfx.unlock();
       autoMode = true;
       stopRequested = false;
@@ -1207,6 +1443,11 @@
 
     async function spin() {
       Sfx.unlock();
+      if (!isPlayAllowed()) {
+        messageEl.innerHTML = "Pi Browser에서 <strong>Pi 로그인</strong> 후 플레이할 수 있습니다.";
+        messageEl.className = "message";
+        return;
+      }
       if (spinning || balance < bet) {
         if (balance < bet) {
           messageEl.innerHTML = `${COIN} 잔액이 부족합니다. (보유 ${balance.toLocaleString("ko-KR")} ${COIN})`;
@@ -1337,6 +1578,7 @@
     depositBtn.addEventListener("click", depositKr);
     withdrawBtn.addEventListener("click", withdrawKr);
     freeBtn.addEventListener("click", claimFreeKr);
+    piLoginBtn?.addEventListener("click", () => handlePiLogin(false));
 
     function syncSymbolHeight() {
       const sym = document.querySelector(".symbol");
@@ -1354,11 +1596,13 @@
       }, 120);
     }
 
-    initReels();
-    syncSymbolHeight();
-    setLastWin(0);
-    updateHud();
-    updateControls();
+    initPiSdk().then(() => {
+      initReels();
+      syncSymbolHeight();
+      setLastWin(0);
+      updateHud();
+      updateControls();
+    });
     window.addEventListener("resize", onViewportChange);
     window.addEventListener("orientationchange", onViewportChange);
     if (window.visualViewport) {
