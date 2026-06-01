@@ -27,16 +27,38 @@
       window.detectPiSandbox = detectPiSandbox;
 
       function piHeadInit() {
+        if (window.__PI_INIT_DONE__) return true;
         if (typeof Pi === "undefined" || typeof Pi.init !== "function") return false;
-        var sandbox = detectPiSandbox();
-        Pi.init({ version: "2.0", sandbox: sandbox });
-        window.__PI_INIT_DONE__ = true;
-        window.__PI_SANDBOX_ACTIVE__ = sandbox;
-        return true;
+        try {
+          var sandbox = detectPiSandbox();
+          var ret = Pi.init({ version: "2.0", sandbox: sandbox });
+          window.__PI_INIT_DONE__ = true;
+          window.__PI_SANDBOX_ACTIVE__ = sandbox;
+          if (ret && typeof ret.then === "function") {
+            ret.catch(function (e) {
+              console.warn("[Pi] init promise error", e);
+            });
+          }
+          return true;
+        } catch (e) {
+          console.warn("[Pi] head init error", e);
+          return false;
+        }
+      }
+
+      function waitPiHeadInit(left) {
+        if (piHeadInit()) return;
+        if (left <= 0) return;
+        setTimeout(function () {
+          waitPiHeadInit(left - 1);
+        }, 200);
       }
 
       if (!piHeadInit()) {
-        window.addEventListener("load", piHeadInit);
+        window.addEventListener("load", function () {
+          waitPiHeadInit(30);
+        });
+        waitPiHeadInit(30);
       }
     })();
   </script>
@@ -811,7 +833,66 @@
     let piSdkReady = false;
     let piLoginBusy = false;
     let piInitDone = false;
-    let piInitPromise = null;
+    const PI_SESSION_KEY = "hangul-slot-pi-session";
+
+    function waitForPiSdk(maxMs) {
+      const limit = maxMs || 8000;
+      return new Promise((resolve) => {
+        if (window.Pi && typeof window.Pi.init === "function") {
+          resolve(true);
+          return;
+        }
+        const t0 = Date.now();
+        const timer = setInterval(() => {
+          if (window.Pi && typeof window.Pi.init === "function") {
+            clearInterval(timer);
+            resolve(true);
+          } else if (Date.now() - t0 >= limit) {
+            clearInterval(timer);
+            resolve(false);
+          }
+        }, 150);
+      });
+    }
+
+    function isPiBrowserEnv() {
+      if (typeof window.Pi === "undefined") return false;
+      if (typeof window.Pi.authenticate !== "function") return false;
+      if (typeof window.Pi.init !== "function") return false;
+      return true;
+    }
+
+    function savePiSession(auth) {
+      try {
+        sessionStorage.setItem(
+          PI_SESSION_KEY,
+          JSON.stringify({
+            accessToken: auth.accessToken,
+            user: auth.user,
+            savedAt: Date.now(),
+          })
+        );
+      } catch (_) {}
+    }
+
+    function loadPiSession() {
+      try {
+        const raw = sessionStorage.getItem(PI_SESSION_KEY);
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        if (!data?.user) return null;
+        return data;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function clearPiSession() {
+      try {
+        sessionStorage.removeItem(PI_SESSION_KEY);
+      } catch (_) {}
+    }
+
     const PI_CONNECT_TIMEOUT_MS = 45000;
 
     /** sandbox: 로컬·sandbox.minepi.com·?sandbox=1 (github.io 프로덕션은 false) */
@@ -837,30 +918,14 @@
     }
 
     function ensurePiInitialized() {
-      if (!window.Pi || typeof window.Pi.init !== "function") {
+      if (!isPiBrowserEnv()) {
         return Promise.reject(new Error("Pi Browser에서 앱을 열어 주세요."));
       }
       if (window.__PI_INIT_DONE__ || piInitDone) {
         piInitDone = true;
         return Promise.resolve();
       }
-      if (piInitPromise) return piInitPromise;
-
-      const sandbox = isPiSandboxMode();
-      piInitPromise = Promise.resolve(
-        window.Pi.init({ version: "2.0", sandbox })
-      )
-        .then(() => {
-          piInitDone = true;
-          window.__PI_INIT_DONE__ = true;
-          window.__PI_SANDBOX_ACTIVE__ = sandbox;
-          console.info("[Pi] initialized", { sandbox, host: location.hostname });
-        })
-        .catch((err) => {
-          piInitPromise = null;
-          throw err;
-        });
-      return piInitPromise;
+      return Promise.reject(new Error("Pi SDK 초기화 대기 중입니다. 잠시 후 다시 시도해 주세요."));
     }
 
     function onIncompletePaymentFound(payment) {
@@ -917,40 +982,23 @@
      * PiService — window.Pi 공식 API 직접 사용
      */
     class PiService {
-      async authenticateWithScopes(scopes) {
-        const auth = await window.Pi.authenticate(scopes, onIncompletePaymentFound);
+      async login() {
+        await ensurePiInitialized();
+        const auth = await window.Pi.authenticate(
+          ["username"],
+          onIncompletePaymentFound
+        );
         if (!auth?.accessToken || !auth?.user) {
           throw new Error("인증 응답이 올바르지 않습니다.");
         }
-        return auth;
-      }
-
-      async login() {
-        await ensurePiInitialized();
-
-        const scopeSets = [
-          ["username", "payments"],
-          ["username"],
-        ];
-        let lastError = null;
-
-        for (const scopes of scopeSets) {
-          try {
-            const auth = await this.authenticateWithScopes(scopes);
-            piAccessToken = auth.accessToken;
-            console.info("[Pi] auth ok", { scopes });
-            return {
-              success: true,
-              accessToken: auth.accessToken,
-              user: auth.user,
-            };
-          } catch (err) {
-            lastError = err;
-            console.warn("[Pi] auth failed", scopes, err);
-          }
-        }
-
-        throw lastError || new Error("Pi 인증에 실패했습니다.");
+        piAccessToken = auth.accessToken;
+        savePiSession(auth);
+        console.info("[Pi] auth ok");
+        return {
+          success: true,
+          accessToken: auth.accessToken,
+          user: auth.user,
+        };
       }
     }
 
@@ -970,11 +1018,12 @@
     }
 
     function requiresPiAuth() {
-      return typeof window.Pi !== "undefined";
+      return isPiBrowserEnv();
     }
 
+    /** Pi Browser에서도 로그인 전 게임 실행 가능 (로그인은 계정·잔액 연동용) */
     function isPlayAllowed() {
-      return !requiresPiAuth() || piConnected;
+      return true;
     }
 
     const piPlayRow = document.getElementById("piPlayRow");
@@ -989,7 +1038,7 @@
       }
       if (piLoginBtn) {
         piLoginBtn.hidden = isConn;
-        piLoginBtn.disabled = isConn || piLoginBusy || (inPi && !window.Pi);
+        piLoginBtn.disabled = isConn || piLoginBusy;
         if (!isConn && piSdkReady && !piLoginBusy) {
           piLoginBtn.textContent = "Pi 로그인 후 플레이";
         } else if (!isConn && !piSdkReady && !piLoginBusy) {
@@ -1023,7 +1072,7 @@
         }
         return;
       }
-      if (!window.Pi) {
+      if (!window.Pi || !isPiBrowserEnv()) {
         if (!silent) {
           messageEl.innerHTML =
             "Pi Browser에서 앱을 열어 <strong>Pi 로그인</strong>을 진행해 주세요.";
@@ -1031,6 +1080,21 @@
         }
         updatePiUI(false);
         return;
+      }
+
+      if (!window.__PI_INIT_DONE__) {
+        if (!silent) {
+          messageEl.textContent = "Pi SDK 준비 중… 잠시 후 다시 눌러 주세요.";
+          messageEl.className = "message";
+        }
+        await waitForPiSdk(5000);
+        if (!window.__PI_INIT_DONE__) {
+          if (!silent) {
+            messageEl.textContent = "Pi SDK 초기화에 실패했습니다. 앱을 새로고침해 주세요.";
+            messageEl.className = "message lose";
+          }
+          return;
+        }
       }
 
       piLoginBusy = true;
@@ -1070,6 +1134,7 @@
         piConnected = false;
         piUser = null;
         piAccessToken = null;
+        clearPiSession();
         updatePiUI(false);
         if (!silent) {
           const mode = isPiSandboxMode() ? "sandbox" : "production";
@@ -1081,26 +1146,44 @@
       } finally {
         piLoginBusy = false;
         if (piLoginBtn && !piConnected) {
-          piLoginBtn.disabled = !window.Pi;
+          piLoginBtn.disabled = false;
           piLoginBtn.textContent = "Pi 로그인 후 플레이";
         }
       }
     }
 
     async function initPiSdk() {
-      if (!requiresPiAuth()) {
+      if (!isPiBrowserEnv()) {
         piSdkReady = true;
+        if (piPlayRow) piPlayRow.hidden = true;
         return;
       }
       piService = new PiService();
       window.piService = piService;
-      try {
-        await ensurePiInitialized();
-      } catch (err) {
-        console.warn("Pi init deferred:", err);
+      await waitForPiSdk(10000);
+      if (!window.__PI_INIT_DONE__) {
+        try {
+          const sandbox = isPiSandboxMode();
+          await Promise.resolve(window.Pi.init({ version: "2.0", sandbox }));
+          window.__PI_INIT_DONE__ = true;
+          window.__PI_SANDBOX_ACTIVE__ = sandbox;
+          piInitDone = true;
+        } catch (err) {
+          console.warn("Pi init retry failed:", err);
+        }
+      } else {
+        piInitDone = true;
       }
       piSdkReady = true;
-      updatePiUI(false);
+      const saved = loadPiSession();
+      if (saved?.user && window.__PI_INIT_DONE__) {
+        piConnected = true;
+        piUser = saved.user;
+        piAccessToken = saved.accessToken || null;
+        onPiAuthenticated();
+      } else {
+        updatePiUI(false);
+      }
     }
 
     const Sfx = (() => {
@@ -1580,11 +1663,7 @@
 
     async function spin() {
       Sfx.unlock();
-      if (!isPlayAllowed()) {
-        messageEl.innerHTML = "Pi Browser에서 <strong>Pi 로그인</strong> 후 플레이할 수 있습니다.";
-        messageEl.className = "message";
-        return;
-      }
+      if (!isPlayAllowed()) return;
       if (spinning || balance < bet) {
         if (balance < bet) {
           messageEl.innerHTML = `${COIN} 잔액이 부족합니다. (보유 ${balance.toLocaleString("ko-KR")} ${COIN})`;
@@ -1734,14 +1813,18 @@
     }
 
     function bootGame() {
-      initReels();
-      setLastWin(0);
-      updateHud();
-      updateControls();
+      try {
+        initReels();
+        setLastWin(0);
+        updateHud();
+        updateControls();
+      } catch (err) {
+        console.error("bootGame error:", err);
+      }
     }
 
     bootGame();
-    initPiSdk();
+    initPiSdk().catch((err) => console.warn("initPiSdk:", err));
     window.addEventListener("resize", onViewportChange);
     window.addEventListener("orientationchange", onViewportChange);
     if (window.visualViewport) {
