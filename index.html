@@ -823,7 +823,9 @@
     const INITIAL_BALANCE = 1000;
     const FREE_BONUS = 1000;
     const STORAGE_KEY = "hangul-slot-kr-balance";
-    /** 백엔드 토큰 검증 URL (설정 시 accessToken POST 전송) */
+    /** 백엔드 토큰 검증 URL (설정 시 accessToken POST 전송)
+     *  배포 예: window.PI_AUTH_VERIFY_URL = "https://YOUR-SERVER/api/pi/verify";
+     *  backend/server.js 의 POST /api/pi/verify 와 연동 */
     window.PI_AUTH_VERIFY_URL = window.PI_AUTH_VERIFY_URL || "";
 
     let piConnected = false;
