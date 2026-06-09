@@ -2,17 +2,22 @@
  * KRSLOT (한글·섬 슬롯) 백엔드
  * index.html 의 PI_AUTH_VERIFY_URL 및 Pi 결제 콜백과 연동
  *
- * index.html 설정 예:
- *   window.PI_AUTH_VERIFY_URL = "https://YOUR-BACKEND/api/pi/verify";
+ * 보안: PI_API_KEY, PI_WALLET_SEED 등은 .env / 호스팅 환경 변수에만 저장.
+ *       이 파일·응답·로그 어디에도 비밀값을 출력하지 않습니다.
  */
 require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const axios = require("axios");
 const PiNetwork = require("pi-backend").default;
 
+const IS_PROD = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT) || 3000;
+
+/** 런타임에만 메모리에 보관 — export·응답·로그 금지 */
 const PI_API_KEY = process.env.PI_API_KEY || "";
 const PI_WALLET_SEED = process.env.PI_WALLET_SEED || "";
 const PI_API_BASE = process.env.PI_API_BASE || "https://api.minepi.com";
@@ -30,6 +35,54 @@ const corsOrigins = (process.env.CORS_ORIGINS || DEFAULT_CORS.join(","))
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+
+const SENSITIVE_PATH_RE =
+  /(?:^|\/)\.env(?:\/|$|\.|$)|(?:^|\/)\.git(?:\/|$)|(?:^|\/)package(?:-lock)?\.json$|(?:^|\/)server\.js$/i;
+
+/** 로그·에러 문자열에서 비밀값·토큰 마스킹 */
+function redactSecrets(input) {
+  if (input == null) return input;
+  const text = typeof input === "string" ? input : String(input);
+  let out = text;
+
+  if (PI_API_KEY.length > 8) {
+    out = out.split(PI_API_KEY).join("[REDACTED_API_KEY]");
+  }
+  if (PI_WALLET_SEED.length > 8) {
+    out = out.split(PI_WALLET_SEED).join("[REDACTED_WALLET_SEED]");
+  }
+
+  return out
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
+    .replace(/Authorization:\s*Key\s+\S+/gi, "Authorization: Key [REDACTED]")
+    .replace(/\bS[A-Z2-7]{55}\b/g, "[REDACTED_SEED]")
+    .replace(/"accessToken"\s*:\s*"[^"]+"/gi, '"accessToken":"[REDACTED]"');
+}
+
+function safeWarn(tag, ...parts) {
+  const msg = parts
+    .map((p) => {
+      if (p instanceof Error) return redactSecrets(p.message);
+      if (typeof p === "object") {
+        try {
+          return redactSecrets(JSON.stringify(p));
+        } catch {
+          return "[object]";
+        }
+      }
+      return redactSecrets(String(p));
+    })
+    .join(" ");
+  console.warn(tag, msg);
+}
+
+/** 프로덕션에서는 내부 상세 숨김 */
+function publicError(err, fallback) {
+  if (!IS_PROD && err?.message) {
+    return redactSecrets(err.message);
+  }
+  return fallback;
+}
 
 /** Pi Platform API (Server API Key) */
 function piServerClient() {
@@ -49,6 +102,12 @@ function piServerClient() {
 
 /** accessToken → Pi /v2/me 검증 (index.html verifyPiAccessToken 용) */
 async function verifyAccessToken(accessToken) {
+  if (typeof accessToken !== "string" || accessToken.length < 16 || accessToken.length > 4096) {
+    const err = new Error("Invalid access token");
+    err.status = 401;
+    throw err;
+  }
+
   const res = await axios.get(`${PI_API_BASE}/v2/me`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -57,6 +116,7 @@ async function verifyAccessToken(accessToken) {
     timeout: 20000,
     validateStatus: (s) => s < 500,
   });
+
   if (res.status !== 200 || !res.data?.uid) {
     const err = new Error("Invalid or expired access token");
     err.status = 401;
@@ -69,7 +129,7 @@ async function verifyAccessToken(accessToken) {
 let piNetwork = null;
 function getPiNetwork() {
   if (!PI_API_KEY || !PI_WALLET_SEED) {
-    throw new Error("PI_API_KEY and PI_WALLET_SEED are required for payouts");
+    throw new Error("Payout service is not configured");
   }
   if (!piNetwork) {
     piNetwork = new PiNetwork(PI_API_KEY, PI_WALLET_SEED, {
@@ -80,7 +140,25 @@ function getPiNetwork() {
 }
 
 const app = express();
-app.set("trust proxy", 1);
+app.disable("x-powered-by");
+app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS) || 1);
+
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    hsts: IS_PROD ? { maxAge: 31536000, includeSubDomains: true } : false,
+  })
+);
+
+/** .env 등 민감 경로 직접 접근 차단 */
+app.use((req, res, next) => {
+  const path = req.path || "";
+  if (SENSITIVE_PATH_RE.test(path)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  next();
+});
 
 app.use(
   cors({
@@ -89,21 +167,44 @@ app.use(
         callback(null, true);
         return;
       }
-      callback(new Error(`CORS blocked: ${origin}`));
+      callback(new Error("CORS blocked"));
     },
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Accept"],
   })
 );
+
 app.use(express.json({ limit: "32kb" }));
 
+const globalApiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: IS_PROD ? 120 : 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: "Too many requests" },
+});
+
+const verifyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: IS_PROD ? 30 : 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: "Too many requests" },
+});
+
+const paymentLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: IS_PROD ? 20 : 80,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: "Too many requests" },
+});
+
+app.use("/api/", globalApiLimiter);
+
+/** 상태 확인 — 비밀·설정 노출 없음 */
 app.get("/health", (_req, res) => {
-  res.json({
-    ok: true,
-    app: "krslot-backend",
-    piApiConfigured: Boolean(PI_API_KEY),
-    walletConfigured: Boolean(PI_WALLET_SEED),
-  });
+  res.json({ ok: true });
 });
 
 /**
@@ -111,13 +212,13 @@ app.get("/health", (_req, res) => {
  * index.html verifyPiAccessToken() 가 호출하는 엔드포인트
  * Body: { "accessToken": "..." }
  */
-app.post("/api/pi/verify", async (req, res) => {
+app.post("/api/pi/verify", verifyLimiter, async (req, res) => {
   const accessToken = req.body?.accessToken;
   if (!accessToken || typeof accessToken !== "string") {
     return res.status(400).json({ success: false, error: "accessToken required" });
   }
   if (!PI_API_KEY) {
-    return res.status(503).json({ success: false, error: "Server PI_API_KEY not configured" });
+    return res.status(503).json({ success: false, error: "Service unavailable" });
   }
 
   try {
@@ -131,10 +232,10 @@ app.post("/api/pi/verify", async (req, res) => {
     });
   } catch (err) {
     const status = err.status || err.response?.status || 401;
-    console.warn("[verify]", status, err.message);
+    safeWarn("[verify]", status, err.message);
     return res.status(status === 401 ? 401 : 502).json({
       success: false,
-      error: status === 401 ? "Invalid access token" : "Pi API verification failed",
+      error: status === 401 ? "Invalid access token" : "Verification failed",
     });
   }
 });
@@ -142,16 +243,15 @@ app.post("/api/pi/verify", async (req, res) => {
 /**
  * POST /api/pi/payments/approve
  * Pi.createPayment → onReadyForServerApproval 연동용 (U2A: 사용자 → 앱 입금)
- * Body: { "paymentId": "...", "accessToken": "..." }
  */
-app.post("/api/pi/payments/approve", async (req, res) => {
+app.post("/api/pi/payments/approve", paymentLimiter, async (req, res) => {
   const paymentId = req.body?.paymentId;
   const accessToken = req.body?.accessToken;
   if (!paymentId || !accessToken) {
     return res.status(400).json({ success: false, error: "paymentId and accessToken required" });
   }
   if (!PI_API_KEY) {
-    return res.status(503).json({ success: false, error: "PI_API_KEY not configured" });
+    return res.status(503).json({ success: false, error: "Service unavailable" });
   }
 
   try {
@@ -161,10 +261,10 @@ app.post("/api/pi/payments/approve", async (req, res) => {
     return res.json({ success: true, payment });
   } catch (err) {
     const status = err.response?.status || 502;
-    console.warn("[approve]", paymentId, status, err.response?.data || err.message);
+    safeWarn("[approve]", paymentId, status, err.message);
     return res.status(status >= 400 && status < 600 ? status : 502).json({
       success: false,
-      error: err.response?.data?.error || "Payment approval failed",
+      error: publicError(err, "Payment approval failed"),
     });
   }
 });
@@ -172,9 +272,8 @@ app.post("/api/pi/payments/approve", async (req, res) => {
 /**
  * POST /api/pi/payments/complete
  * Pi.createPayment → onReadyForServerCompletion 연동용
- * Body: { "paymentId": "...", "txid": "...", "accessToken": "..." }
  */
-app.post("/api/pi/payments/complete", async (req, res) => {
+app.post("/api/pi/payments/complete", paymentLimiter, async (req, res) => {
   const paymentId = req.body?.paymentId;
   const txid = req.body?.txid;
   const accessToken = req.body?.accessToken;
@@ -185,7 +284,7 @@ app.post("/api/pi/payments/complete", async (req, res) => {
     });
   }
   if (!PI_API_KEY) {
-    return res.status(503).json({ success: false, error: "PI_API_KEY not configured" });
+    return res.status(503).json({ success: false, error: "Service unavailable" });
   }
 
   try {
@@ -195,10 +294,10 @@ app.post("/api/pi/payments/complete", async (req, res) => {
     return res.json({ success: true, payment });
   } catch (err) {
     const status = err.response?.status || 502;
-    console.warn("[complete]", paymentId, status, err.response?.data || err.message);
+    safeWarn("[complete]", paymentId, status, err.message);
     return res.status(status >= 400 && status < 600 ? status : 502).json({
       success: false,
-      error: err.response?.data?.error || "Payment completion failed",
+      error: publicError(err, "Payment completion failed"),
     });
   }
 });
@@ -206,9 +305,8 @@ app.post("/api/pi/payments/complete", async (req, res) => {
 /**
  * POST /api/pi/payments/payout
  * A2U: 승리 상금 등 Pi 코인을 사용자에게 지급 (pi-backend)
- * Body: { "accessToken": "...", "amount": 1, "memo": "...", "metadata": {} }
  */
-app.post("/api/pi/payments/payout", async (req, res) => {
+app.post("/api/pi/payments/payout", paymentLimiter, async (req, res) => {
   const accessToken = req.body?.accessToken;
   const amount = Number(req.body?.amount);
   const memo = req.body?.memo || "KRSLOT prize";
@@ -234,10 +332,10 @@ app.post("/api/pi/payments/payout", async (req, res) => {
     const payment = await pi.completePayment(paymentId, txid);
     return res.json({ success: true, paymentId, txid, payment });
   } catch (err) {
-    console.warn("[payout]", err.response?.data || err.message);
+    safeWarn("[payout]", err.message);
     return res.status(502).json({
       success: false,
-      error: err.message || "Payout failed",
+      error: publicError(err, "Payout failed"),
     });
   }
 });
@@ -247,17 +345,24 @@ app.use((_req, res) => {
 });
 
 app.use((err, _req, res, _next) => {
-  if (err.message?.startsWith("CORS blocked")) {
-    return res.status(403).json({ error: err.message });
+  if (err.message === "CORS blocked") {
+    return res.status(403).json({ error: "Forbidden" });
   }
-  console.error(err);
+  safeWarn("[error]", err);
   res.status(500).json({ error: "Internal server error" });
 });
 
+process.on("uncaughtException", (err) => {
+  safeWarn("[uncaughtException]", err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  safeWarn("[unhandledRejection]", reason);
+});
+
 app.listen(PORT, () => {
-  console.log(`KRSLOT backend listening on http://localhost:${PORT}`);
-  console.log(`  verify  POST /api/pi/verify`);
-  console.log(`  approve POST /api/pi/payments/approve`);
-  console.log(`  complete POST /api/pi/payments/complete`);
-  if (!PI_API_KEY) console.warn("  WARN: PI_API_KEY not set — copy .env.example to .env");
+  console.log(`KRSLOT backend listening on port ${PORT}`);
+  if (!PI_API_KEY) {
+    console.warn("WARN: PI_API_KEY not set — set it in .env or hosting env vars");
+  }
 });
