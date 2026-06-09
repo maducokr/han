@@ -1,14 +1,24 @@
 <!DOCTYPE html>
+<!-- ========================================================================
+     한글 · 섬 슬롯 게임 (단일 HTML)
+     - 3릴×3행 슬롯, 가운데 줄 3칸 일치 시 당첨
+     - Pi App Studio: Pi Browser + Pi.authenticate 연동
+     - 배포 URL 예: https://maducokr.github.io/han/
+     ======================================================================== -->
 <html lang="ko">
 <head>
+  <!-- 문자 인코딩·모바일 뷰포트·노치(safe-area) 대응 -->
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>한글 · 섬 슬롯</title>
+  <!-- Pi Network 공식 브라우저 SDK (Pi.init, Pi.authenticate) -->
   <script src="https://sdk.minepi.com/pi-sdk.js"></script>
   <script>
+    /* ── Pi SDK head 초기화 (페이지 로드 직후 1회) ── */
     (function () {
+      /** sandbox 모드 여부: 로컬·sandbox.minepi.com·?sandbox=1 → true, github.io → false */
       function detectPiSandbox() {
         var qs = new URLSearchParams(location.search);
         if (qs.has("sandbox")) {
@@ -26,6 +36,7 @@
 
       window.detectPiSandbox = detectPiSandbox;
 
+      /** Pi.init 호출 — version 2.0, sandbox 플래그 설정 */
       function piHeadInit() {
         if (window.__PI_INIT_DONE__) return true;
         if (typeof Pi === "undefined" || typeof Pi.init !== "function") return false;
@@ -46,6 +57,7 @@
         }
       }
 
+      /** SDK 로드 지연 시 200ms 간격으로 init 재시도 (최대 left회) */
       function waitPiHeadInit(left) {
         if (piHeadInit()) return;
         if (left <= 0) return;
@@ -63,6 +75,9 @@
     })();
   </script>
   <style>
+    /* ══════════════════════════════════════
+       CSS 변수 — 색상·반응형 스케일
+       ══════════════════════════════════════ */
     :root {
       --bg: #0a1628;
       --panel: #132238;
@@ -101,12 +116,15 @@
       --special-svg: clamp(1.5rem, 7vw, 1.875rem);
     }
 
+    /* 전역 리셋 */
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
+    /* hidden 속성 요소는 레이아웃에서 완전 제거 (Pi 버튼 겹침 방지) */
     [hidden] {
       display: none !important;
     }
 
+    /* 페이지 전체 — 중앙 정렬, safe-area 패딩 */
     body {
       min-height: 100dvh;
       min-height: 100svh;
@@ -126,6 +144,7 @@
       touch-action: manipulation;
     }
 
+    /* 게임 메인 프레임 (9:16 비율, 세로 스크롤) */
     .game-frame {
       width: var(--frame-w);
       height: auto;
@@ -144,6 +163,7 @@
       -webkit-overflow-scrolling: touch;
     }
 
+    /* 상단: 제목·부제 pill */
     .game-header {
       display: flex;
       flex-direction: column;
@@ -153,6 +173,7 @@
       flex-shrink: 0;
     }
 
+    /* 공통 타원형 status pill 스타일 */
     .status-pill {
       display: inline-block;
       border-radius: 999px;
@@ -168,6 +189,7 @@
         0 2px 8px rgba(0, 0, 0, 0.25);
     }
 
+    /* 제목 pill */
     .title-pill {
       font-size: var(--pill-fs-title);
       color: var(--gold);
@@ -175,6 +197,7 @@
       margin: 0;
     }
 
+    /* 부제 pill (게임 규칙 요약) */
     .subtitle-pill {
       font-size: var(--pill-fs-sub);
       color: #e8f0ff;
@@ -185,6 +208,7 @@
 
     .subtitle-pill strong { color: var(--gold); font-weight: 800; }
 
+    /* Pi 로그인 영역 — game-frame 맨 하단 고정 (margin-top: auto) */
     .pi-bar {
       display: flex;
       flex-direction: column;
@@ -196,6 +220,7 @@
       gap: var(--gap-xs);
     }
 
+    /* Pi 로그인 버튼 — 너비 = 슬롯 릴(--reels-width)과 동일 */
     .pi-login-btn {
       width: var(--reels-width);
       max-width: 100%;
@@ -229,6 +254,7 @@
       text-align: center;
     }
 
+    /* HUD: CASH / BET / WIN 노란 통계 박스 */
     .hud {
       display: flex;
       justify-content: center;
@@ -292,6 +318,7 @@
 
     .stat--coin label { color: #6b4f0a; }
 
+    /* 슬롯 머신 본체: 릴 + 컨트롤 + 입출금 + 메시지 */
     .machine {
       flex: 0 0 auto;
       min-height: 0;
@@ -307,6 +334,7 @@
       border: none;
     }
 
+    /* 3×3 슬롯 릴 컨테이너 */
     .reels-wrap {
       position: relative;
       background: var(--reel-bg);
@@ -321,6 +349,7 @@
       min-height: calc(var(--reel-h) + 1.5rem);
     }
 
+    /* "3 × 3" 그리드 라벨 */
     .grid-label {
       display: inline-block;
       text-align: center;
@@ -340,6 +369,7 @@
       display: none;
     }
 
+    /* 3열 CSS Grid — 각 열이 1개 릴 */
     .reels {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -348,6 +378,7 @@
       margin: 0 auto;
     }
 
+    /* 개별 릴 — overflow로 3칸만 보이게, strip은 translateY로 스크롤 */
     .reel {
       background: transparent;
       border-radius: 8px;
@@ -357,17 +388,20 @@
       border: none;
     }
 
+    /* 릴 정지 순간 심볼 하이라이트 */
     .reel.stopping .symbol:nth-child(n) {
       border-color: rgba(255, 230, 100, 0.75);
       box-shadow: 0 0 8px rgba(255, 230, 100, 0.35);
     }
 
+    /* 릴 내부 세로 심볼 스트립 (transform으로 스크롤) */
     .reel-strip {
       display: flex;
       flex-direction: column;
       will-change: transform;
     }
 
+    /* 슬롯 심볼 1칸 (자모 또는 특수 SVG) */
     .symbol {
       height: var(--symbol-h);
       display: flex;
@@ -403,6 +437,7 @@
       flex-direction: column;
     }
 
+    /* 베팅·SPIN·AUTO·STOP·음소거 버튼 영역 */
     .controls {
       display: flex;
       flex-direction: column;
@@ -449,6 +484,7 @@
       margin: 0 auto;
     }
 
+    /* 공통 버튼 스타일 */
     button {
       font-family: inherit;
       cursor: pointer;
@@ -461,6 +497,7 @@
     button:active:not(:disabled) { transform: scale(0.97); }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
 
+    /* 메인 SPIN 버튼 (금색) */
     #spinBtn {
       background: linear-gradient(180deg, #ffd54f, var(--gold-dim));
       color: #1a1408;
@@ -481,6 +518,7 @@
       width: 100%;
     }
 
+    /* AUTO 연속 스핀 버튼 */
     .auto-btn {
       background: linear-gradient(180deg, #5eead4, #2dd4bf);
       color: #0a1628;
@@ -498,6 +536,7 @@
       50% { filter: brightness(1.12); }
     }
 
+    /* STOP (AUTO/스핀 중지) 버튼 */
     .stop-btn {
       background: linear-gradient(180deg, #f87171, #dc2626);
       color: #fff;
@@ -508,6 +547,7 @@
 
     .stop-btn:hover:not(:disabled) { filter: brightness(1.1); }
 
+    /* 베팅 금액 선택 버튼 (5/10/25/50 KR) */
     .bet-btn {
       background: var(--panel);
       color: var(--text);
@@ -523,6 +563,7 @@
       color: var(--gold);
     }
 
+    /* 하단 상태 메시지 pill (당첨/실패/Pi 로그인 안내) */
     .message {
       display: block;
       width: fit-content;
@@ -558,6 +599,7 @@
       50% { box-shadow: 0 0 20px 4px rgba(123, 237, 159, 0.25); }
     }
 
+    /* 당첨 시 machine·game-frame 펄스 애니메이션 */
     .machine.winning {
       animation: pulse-win 0.8s ease 2;
     }
@@ -566,6 +608,7 @@
       animation: pulse-win 0.8s ease 2;
     }
 
+    /* 음소거 토글 버튼 */
     .sound-toggle {
       background: transparent;
       color: var(--accent);
@@ -577,6 +620,7 @@
 
     .sound-toggle.muted { opacity: 0.5; }
 
+    /* 가상 KR 입·출금 UI */
     .bank-row {
       display: flex;
       flex-direction: column;
@@ -655,6 +699,9 @@
       white-space: nowrap;
     }
 
+    /* ══════════════════════════════════════
+       반응형 미디어 쿼리
+       ══════════════════════════════════════ */
     /* ── 모바일: 소형 (iPhone SE, Galaxy S mini 등 ~360px) ── */
     @media (max-width: 360px) {
       :root {
@@ -724,23 +771,30 @@
   </style>
 </head>
 <body>
+  <!-- ══ 게임 UI 구조 ══
+       game-frame > header, hud, machine(릴·컨트롤·입출금), pi-bar(하단) -->
   <div class="game-frame" id="gameFrame">
+    <!-- 제목·게임 설명 -->
     <header class="game-header">
       <h1 class="status-pill title-pill">한글 · 섬 슬롯</h1>
       <p class="status-pill subtitle-pill">3칸 슬롯 · 두꺼비 · 섬 · 배당 <strong>KR</strong> · 3개 일치 시 발음 5회!</p>
     </header>
 
+    <!-- CASH(잔액) / BET(베팅) / WIN(최근 당첨) -->
     <div class="hud">
       <div class="stat stat--coin"><label>CASH</label><span id="balance"></span></div>
       <div class="stat"><label>BET</label><span id="betDisplay"></span></div>
       <div class="stat"><label>WIN</label><span id="lastWin"></span></div>
     </div>
 
+    <!-- 슬롯 머신: 3×3 릴, 베팅/스핀, 가상 입출금 -->
     <div class="machine" id="machine">
+    <!-- 3×3 릴 영역 (JS initReels로 동적 생성) -->
     <div class="reels-wrap">
       <p class="grid-label">3 × 3</p>
       <div class="reels" id="reels"></div>
     </div>
+    <!-- 베팅 금액·SPIN/AUTO/STOP·음소거 -->
     <div class="controls">
       <div class="control-row bet-row">
         <button type="button" class="bet-btn" data-bet="5">5 KR</button>
@@ -755,6 +809,7 @@
         <button type="button" class="sound-toggle" id="soundToggle" aria-pressed="false">🔊</button>
       </div>
     </div>
+    <!-- Pi 입·출금 (1π = 3,141,590 KR) · FREE 보너스 -->
     <div class="bank-row">
       <span class="bank-label status-pill">입·출금 π 선택 <small>(1π = 3,141,590 KR)</small></span>
       <div class="bank-presets-row">
@@ -769,35 +824,42 @@
         <button type="button" class="free-btn" id="freeBtn">FREE</button>
       </div>
     </div>
+    <!-- 게임 상태·당첨·Pi 안내 메시지 -->
     <p class="message" id="message">가운데 <strong>3칸</strong> 모두 일치 시 <strong>KR</strong> 지급 + 발음 5회</p>
     </div>
 
+    <!-- Pi Browser 전용: 로그인 버튼 (Pi가 없으면 hidden 유지) -->
     <div class="pi-bar" id="piPlayRow" hidden>
       <button type="button" class="pi-login-btn" id="piLoginBtn">Pi 로그인 후 플레이</button>
       <span class="status-pill pi-user-pill" id="piUserProfile" hidden></span>
     </div>
   </div>
 
+  <!-- ══ 게임 로직 (심볼·슬롯·Pi·SFX·TTS) ══ -->
   <script>
+    /* ══════════════════════════════════════
+       1. 게임 심볼·발음 데이터
+       ══════════════════════════════════════ */
+    /** 13그룹 한글 자모 (슬롯한글.txt 기준) — 같은 그룹 자모 3칸 일치 시 당첨 */
     const JAMO_GROUPS = [
-      ["ㄱ", "ㅋ", "ㆁ"],
-      ["ㄴ", "ㄷ", "ㅌ"],
-      ["ㅁ", "ㅂ", "ㅍ"],
-      ["ㅅ", "ㅈ", "ㅊ"],
-      ["ㆆ", "ㅎ", "ㅇ"],
-      ["ㅿ"],
-      ["ㄹ"],
-      ["ㄲ", "ㄸ", "ㅃ", "ㅆ", "ㅉ", "ㆅ"],
-      ["ㆍ"],
-      ["ㅡ"],
-      ["ㅣ"],
-      ["ㅗ", "ㅏ", "ㅜ", "ㅓ"],
-      ["ㅛ", "ㅑ", "ㅠ", "ㅕ"],
+      ["ㄱ", "ㅋ", "ㆁ"],           // 1: 기역·키읔·옛이응
+      ["ㄴ", "ㄷ", "ㅌ"],           // 2: 니은·디귿·티읕
+      ["ㅁ", "ㅂ", "ㅍ"],           // 3: 미음·비읍·피읖
+      ["ㅅ", "ㅈ", "ㅊ"],           // 4: 시옷·지읒·치읓
+      ["ㆆ", "ㅎ", "ㅇ"],           // 5: 여린히읗·히읗·이응
+      ["ㅿ"],                       // 6: 반치음
+      ["ㄹ"],                       // 7: 리을
+      ["ㄲ", "ㄸ", "ㅃ", "ㅆ", "ㅉ", "ㆅ"], // 8: 쌍자음·옛시옷
+      ["ㆍ"],                       // 9: 아래아
+      ["ㅡ"],                       // 10: 으
+      ["ㅣ"],                       // 11: 이
+      ["ㅗ", "ㅏ", "ㅜ", "ㅓ"],     // 12: 모음 ㅗㅏㅜㅓ
+      ["ㅛ", "ㅑ", "ㅠ", "ㅕ"],     // 13: 모음 ㅛㅑㅠㅕ
     ];
 
+    /** 특수 심볼: 두꺼비·섬 — mult = 베팅 배당 배수 (섬은 +20% 영토 보너스) */
     const SPECIALS = [
-      { id: "tugeobi", label: "두꺼비", speak: "두꺼비", mult: 50 },
-
+      { id: "tugeobi", label: "두꺼비", speak: "두꺼비", mult: 50 },       // 최고 배당
       { id: "ieodo", label: "이어도", speak: "이어도", mult: 30 },
       { id: "dokdo", label: "독도", speak: "독도", mult: 35 },
       { id: "baengnyeong", label: "백령도", speak: "백령도", mult: 28 },
@@ -805,6 +867,7 @@
       { id: "gyeokryeol", label: "격렬비열도", speak: "격렬비열도", mult: 32 },
     ];
 
+    /** TTS 발음용 자모 이름 (당첨 시 5회 재생) */
     const JAMO_SPEAK = {
       "ㄱ": "기역", "ㅋ": "키읔", "ㆁ": "옛이응",
       "ㄴ": "니은", "ㄷ": "디귿", "ㅌ": "티읕",
@@ -818,39 +881,46 @@
       "ㅛ": "요", "ㅑ": "야", "ㅠ": "유", "ㅕ": "여",
     };
 
-    const COIN = "KR";
-    const COIN_LABEL = "win KR";
-    const PI_COIN_LABEL = "π";
-    const PI_TO_KR_RATE = 3141590;
-    const INITIAL_BALANCE = 1000;
-    const FREE_BONUS = 1000;
-    const STORAGE_KEY = "hangul-slot-kr-balance";
+    /* ══════════════════════════════════════
+       2. 게임 경제·저장소 상수
+       ══════════════════════════════════════ */
+    const COIN = "KR";                    // 게임 플레이·당첨 단위
+    const COIN_LABEL = "win KR";          // HUD 표시 라벨
+    const PI_COIN_LABEL = "π";            // 입·출금 단위
+    const PI_TO_KR_RATE = 3141590;        // 1 Pi = 3,141,590 KR
+    const INITIAL_BALANCE = 1000;         // 최초 KR 잔액
+    const FREE_BONUS = 1000;              // FREE 버튼 보너스 (KR)
+    const STORAGE_KEY = "hangul-slot-kr-balance"; // localStorage 기본 키
     /** 백엔드 토큰 검증 URL — Render 서버 /api/pi/verify */
     window.PI_AUTH_VERIFY_URL =
       window.PI_AUTH_VERIFY_URL || "https://han-xe9x.onrender.com/api/pi/verify";
     /** 백엔드 API 루트 — π 입·출금 (approve/complete/payout) */
     window.PI_BACKEND_URL = window.PI_BACKEND_URL || "https://han-xe9x.onrender.com";
 
-    let piConnected = false;
-    let piUser = null;
-    let piAccessToken = null;
-    let piService = null;
-    let piSdkReady = false;
-    let piLoginBusy = false;
-    let piPaymentBusy = false;
-    let piInitDone = false;
-    const PI_SESSION_KEY = "hangul-slot-pi-session";
+    /* ══════════════════════════════════════
+       3. Pi Network 연동 상태 변수
+       ══════════════════════════════════════ */
+    let piConnected = false;   // Pi 로그인 완료 여부
+    let piUser = null;         // Pi 사용자 정보 (username 등)
+    let piAccessToken = null; // Pi accessToken (서버 검증용)
+    let piService = null;    // PiService 인스턴스
+    let piSdkReady = false;  // SDK 준비 완료 플래그
+    let piLoginBusy = false; // 로그인 진행 중 (중복 클릭 방지)
+    let piPaymentBusy = false; // Pi 입·출금 진행 중
+    let piInitDone = false;  // Pi.init 성공 여부
+    const PI_SESSION_KEY = "hangul-slot-pi-session"; // sessionStorage 세션 키
     const PI_DEPOSIT_FLAG_PREFIX = "hangul-slot-pi-deposited-";
 
+    /** 1π → KR (정수) */
     function piToKr(piAmount) {
       return Math.floor(Number(piAmount) * PI_TO_KR_RATE);
     }
 
+    /** KR → π */
     function krToPi(krAmount) {
       return Number(krAmount) / PI_TO_KR_RATE;
     }
 
-    /** KR → π (출금용, 7자리 내림) */
     function krToPiAmount(krAmount) {
       const kr = Math.floor(Number(krAmount) || 0);
       if (kr <= 0) return 0;
@@ -867,7 +937,6 @@
       if (key) sessionStorage.setItem(key, "1");
     }
 
-    /** π 입금 이력 여부 (Pi Browser에서 플레이 조건) */
     function hasPiDeposited() {
       if (!isPiBrowserEnv()) return true;
       if (!piConnected) return false;
@@ -892,6 +961,7 @@
       return `${text} ${PI_COIN_LABEL}`;
     }
 
+    /** 백엔드 API 베이스 URL (π 입출금·검증) */
     function getPiBackendBase() {
       const custom = (window.PI_BACKEND_URL || "").trim().replace(/\/$/, "");
       if (custom) return custom;
@@ -900,6 +970,7 @@
       return verify.replace(/\/api\/pi\/verify\/?$/i, "");
     }
 
+    /** Pi SDK 스크립트 로드 대기 (폴링) */
     function waitForPiSdk(maxMs) {
       const limit = maxMs || 8000;
       return new Promise((resolve) => {
@@ -920,6 +991,7 @@
       });
     }
 
+    /** Pi Browser 환경 판별 — window.Pi + authenticate + init 존재 */
     function isPiBrowserEnv() {
       if (typeof window.Pi === "undefined") return false;
       if (typeof window.Pi.authenticate !== "function") return false;
@@ -927,6 +999,7 @@
       return true;
     }
 
+    /** 로그인 성공 시 accessToken·user를 sessionStorage에 저장 */
     function savePiSession(auth) {
       try {
         sessionStorage.setItem(
@@ -940,6 +1013,7 @@
       } catch (_) {}
     }
 
+    /** 저장된 Pi 세션 복원 (새로고침 후 자동 로그인 UI) */
     function loadPiSession() {
       try {
         const raw = sessionStorage.getItem(PI_SESSION_KEY);
@@ -952,15 +1026,16 @@
       }
     }
 
+    /** 로그인 실패 시 세션 삭제 */
     function clearPiSession() {
       try {
         sessionStorage.removeItem(PI_SESSION_KEY);
       } catch (_) {}
     }
 
-    const PI_CONNECT_TIMEOUT_MS = 45000;
+    const PI_CONNECT_TIMEOUT_MS = 45000; // Pi.authenticate 최대 대기 시간(ms)
 
-    /** sandbox: 로컬·sandbox.minepi.com·?sandbox=1 (github.io 프로덕션은 false) */
+    /** sandbox/production 모드 판별 */
     function isPiSandboxMode() {
       if (typeof window.__PI_SANDBOX_ACTIVE__ === "boolean") {
         return window.__PI_SANDBOX_ACTIVE__;
@@ -982,6 +1057,7 @@
       return false;
     }
 
+    /** head에서 Pi.init 완료 여부 확인 (재-init 방지) */
     function ensurePiInitialized() {
       if (!isPiBrowserEnv()) {
         return Promise.reject(new Error("Pi Browser에서 앱을 열어 주세요."));
@@ -993,6 +1069,7 @@
       return Promise.reject(new Error("Pi SDK 초기화 대기 중입니다. 잠시 후 다시 시도해 주세요."));
     }
 
+    /** Pi.authenticate 필수 콜백 — 미완료 결제 발견 시 (서버 처리 필요 시 확장) */
     function onIncompletePaymentFound(payment) {
       console.warn("[Pi] incomplete payment:", payment?.identifier);
       try {
@@ -1000,6 +1077,7 @@
       } catch (_) {}
     }
 
+    /** Pi 인증 오류 메시지를 사용자 친화 문구로 변환 */
     function formatPiAuthError(err) {
       const msg = err?.message || String(err || "");
       if (/cancel/i.test(msg)) return "로그인이 취소되었습니다.";
@@ -1010,22 +1088,28 @@
       return msg || "Pi 인증에 실패했습니다.";
     }
 
-    let SYMBOL_H = 56;
-    const REEL_COUNT = 3;
-    const VISIBLE = 3;
-    const SPIN_MS = 1800;
-    const PRONOUNCE_TIMES = 5;
+    /* ══════════════════════════════════════
+       4. 슬롯 릴·애니메이션 상수
+       ══════════════════════════════════════ */
+    let SYMBOL_H = 56;        // 심볼 1칸 높이(px) — syncSymbolHeight로 CSS와 동기화
+    const REEL_COUNT = 3;     // 릴(열) 개수
+    const VISIBLE = 3;        // 릴당 보이는 행 수
+    const SPIN_MS = 1800;     // 스핀 기본 애니메이션 시간(ms)
+    const PRONOUNCE_TIMES = 5; // 당첨 TTS 반복 횟수
 
+    /** KR 금액을 HUD HTML 형식으로 포맷 */
     function formatKr(amount) {
       const n = Math.floor(Number(amount) || 0);
       return `${n.toLocaleString("ko-KR")} <span class="kr-unit">${COIN_LABEL}</span>`;
     }
 
+    /** Pi 로그인 사용자별 localStorage 키 분리 */
     function getBalanceStorageKey() {
       const id = piUser?.username || piUser?.uid;
       return id ? `${STORAGE_KEY}-${id}` : STORAGE_KEY;
     }
 
+    /** localStorage에서 잔액 로드, 없으면 INITIAL_BALANCE */
     function loadBalance() {
       try {
         const saved = localStorage.getItem(getBalanceStorageKey());
@@ -1037,16 +1121,19 @@
       return isPiBrowserEnv() ? 0 : INITIAL_BALANCE;
     }
 
+    /** 현재 balance를 localStorage에 저장 */
     function saveBalance() {
       try {
         localStorage.setItem(getBalanceStorageKey(), String(balance));
       } catch (_) {}
     }
 
-    /**
-     * PiService — window.Pi 공식 API 직접 사용
-     */
+    /* ══════════════════════════════════════
+       5. Pi Network 서비스·UI
+       ══════════════════════════════════════ */
+    /** PiService — window.Pi.authenticate 직접 호출 래퍼 */
     class PiService {
+      /** username 스코프로 Pi 로그인 → accessToken·user 반환 */
       async login() {
         await ensurePiInitialized();
         const auth = await window.Pi.authenticate(
@@ -1067,6 +1154,7 @@
       }
     }
 
+    /** PI_AUTH_VERIFY_URL이 설정된 경우 서버에 토큰 검증 POST (선택) */
     async function verifyPiAccessToken(accessToken) {
       const url = window.PI_AUTH_VERIFY_URL;
       if (!url || !accessToken) return;
@@ -1082,6 +1170,7 @@
       }
     }
 
+    /** Pi Browser에서 Pi 로그인 UI를 보여줄지 여부 */
     function requiresPiAuth() {
       return isPiBrowserEnv();
     }
@@ -1102,10 +1191,12 @@
       return "";
     }
 
+    /* Pi 로그인 DOM 참조 */
     const piPlayRow = document.getElementById("piPlayRow");
     const piLoginBtn = document.getElementById("piLoginBtn");
     const piUserProfile = document.getElementById("piUserProfile");
 
+    /** Pi 로그인 버튼·사용자 pill 표시/숨김 갱신 */
     function updatePiUI(connected) {
       const isConn = connected ?? piConnected;
       const inPi = requiresPiAuth();
@@ -1129,6 +1220,7 @@
       }
     }
 
+    /** 로그인 성공 후 잔액 로드·HUD·환영 메시지 */
     function onPiAuthenticated() {
       balance = loadBalance();
       updatePiUI(true);
@@ -1139,6 +1231,7 @@
       messageEl.className = "message";
     }
 
+    /** Pi 로그인 버튼 핸들러 — 타임아웃·에러 처리 포함 (silent: 자동 호출 시 메시지 생략) */
     async function handlePiLogin(silent) {
       if (piLoginBusy) return;
       if (!piService) {
@@ -1228,6 +1321,7 @@
       }
     }
 
+    /** Pi SDK 초기화·세션 복원·UI 설정 (게임과 병렬 실행) */
     async function initPiSdk() {
       if (!isPiBrowserEnv()) {
         piSdkReady = true;
@@ -1262,21 +1356,27 @@
       }
     }
 
+    /* ══════════════════════════════════════
+       6. Web Audio 효과음 (Sfx 모듈)
+       ══════════════════════════════════════ */
     const Sfx = (() => {
-      let ctx = null;
-      let muted = false;
-      let spinTimer = null;
+      let ctx = null;       // AudioContext 싱글톤
+      let muted = false;    // 음소거 상태
+      let spinTimer = null; // 스핀 중 tick 반복 타이머
 
+      /** AudioContext 지연 생성 (사용자 제스처 후 unlock) */
       function ac() {
         if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
         return ctx;
       }
 
+      /** iOS 등 suspended 상태 AudioContext 재개 */
       function unlock() {
         const c = ac();
         if (c.state === "suspended") c.resume();
       }
 
+      /** 단일 오실레이터 톤 재생 */
       function tone(freq, dur, type = "square", vol = 0.12, when = 0) {
         if (muted) return;
         const c = ac();
@@ -1293,6 +1393,7 @@
         o.stop(t + dur);
       }
 
+      /** 밴드패스 노이즈 (릴 정지·스핀 효과) */
       function noise(dur, vol = 0.08) {
         if (muted) return;
         const c = ac();
@@ -1317,22 +1418,22 @@
         setMuted(m) { muted = m; if (m) this.stopSpinLoop(); },
         isMuted() { return muted; },
 
-        click() {
+        click() { /* UI 클릭 효과 */
           tone(520, 0.06, "sine", 0.1);
           tone(780, 0.05, "sine", 0.08, 0.04);
         },
 
-        spinStart() {
+        spinStart() { /* 스핀 시작음 */
           unlock();
           tone(220, 0.15, "sawtooth", 0.06);
           tone(330, 0.12, "square", 0.05, 0.05);
         },
 
-        spinTick() {
+        spinTick() { /* 릴 회전 중 짧은 틱 */
           tone(180 + Math.random() * 80, 0.04, "square", 0.06);
         },
 
-        startSpinLoop() {
+        startSpinLoop() { /* 스핀 중 90ms 간격 tick 반복 */
           this.stopSpinLoop();
           let n = 0;
           spinTimer = setInterval(() => {
@@ -1343,22 +1444,22 @@
           }, 90);
         },
 
-        stopSpinLoop() {
+        stopSpinLoop() { /* tick 반복 중지 */
           if (spinTimer) clearInterval(spinTimer);
           spinTimer = null;
         },
 
-        reelStop(i) {
+        reelStop(i) { /* i번째 릴 정지음 */
           tone(120 + i * 40, 0.1, "triangle", 0.14);
           noise(0.06, 0.1);
           tone(90, 0.08, "sine", 0.1, 0.02);
         },
 
-        winSmall() {
+        winSmall() { /* 소액 당첨 (미사용·예비) */
           [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.12, "square", 0.1, i * 0.1));
         },
 
-        winBig() {
+        winBig() { /* 당첨 팡파르 */
           const notes = [392, 494, 587, 659, 784, 988, 1175];
           notes.forEach((f, i) => tone(f, 0.14, "square", 0.11, i * 0.09));
           setTimeout(() => {
@@ -1368,30 +1469,36 @@
           setTimeout(() => noise(0.15, 0.12), 100);
         },
 
-        lose() {
+        lose() { /* 미당첨·잔액 부족 */
           tone(200, 0.2, "sawtooth", 0.08);
           tone(150, 0.25, "triangle", 0.06, 0.15);
         },
 
-        deposit() {
+        deposit() { /* 입금 성공 */
           [659, 784, 988, 1175].forEach((f, i) => tone(f, 0.1, "sine", 0.1, i * 0.07));
         },
 
-        withdraw() {
+        withdraw() { /* 출금 성공 */
           [784, 659, 523, 392].forEach((f, i) => tone(f, 0.1, "triangle", 0.09, i * 0.07));
         },
       };
     })();
 
+    /* ══════════════════════════════════════
+       7. TTS 발음 (당첨 시 5회)
+       ══════════════════════════════════════ */
+    /** 심볼에 맞는 한글 발음 문자열 반환 */
     function getPronunciation(sym) {
       if (sym.type === "jamo") return JAMO_SPEAK[sym.char] || sym.char;
       return sym.speak || sym.label;
     }
 
+    /** Promise 기반 setTimeout */
     function delay(ms) {
       return new Promise((r) => setTimeout(r, ms));
     }
 
+    /** speechSynthesis로 한 번 발음 (ko-KR) */
     function speakOnce(text) {
       return new Promise((resolve) => {
         if (!window.speechSynthesis) {
@@ -1411,12 +1518,14 @@
       });
     }
 
+    /** 심볼 종류별 TTS 피치 조정 */
     function symPitch(text) {
       if (text.length > 4) return 1;
       if (text.includes("쌍") || text.includes("독도")) return 1.15;
       return 1.05;
     }
 
+    /** 당첨 심볼 발음 PRONOUNCE_TIMES회 연속 재생 (STOP 시 중단) */
     async function pronounceFiveTimes(sym) {
       const text = getPronunciation(sym);
       speechSynthesis?.cancel();
@@ -1428,11 +1537,15 @@
       }
     }
 
+    /* 브라우저 음성 목록 로드 (한국어 voice 선택용) */
     if (window.speechSynthesis) {
       speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
       speechSynthesis.getVoices();
     }
 
+    /* ══════════════════════════════════════
+       8. 특수 심볼 SVG 아이콘
+       ══════════════════════════════════════ */
     const svgIcons = {
       tugeobi: `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
         <ellipse cx="32" cy="38" rx="22" ry="20" fill="#8B6914"/>
@@ -1480,6 +1593,7 @@
       </svg>`,
     };
 
+    /** 자모·특수 심볼을 가중치와 함께 풀에 합침 */
     function buildSymbolPool() {
       const pool = [];
       JAMO_GROUPS.forEach((group, gi) => {
@@ -1499,8 +1613,9 @@
       return pool;
     }
 
-    const SYMBOL_POOL = buildSymbolPool();
+    const SYMBOL_POOL = buildSymbolPool(); // 스핀 시 랜덤 추첨 풀
 
+    /** 가중치 기반 랜덤 심볼 1개 선택 */
     function weightedPick() {
       const total = SYMBOL_POOL.reduce((a, s) => a + s.weight, 0);
       let r = Math.random() * total;
@@ -1511,10 +1626,12 @@
       return SYMBOL_POOL[SYMBOL_POOL.length - 1];
     }
 
+    /** 당첨 판정용 심볼 고유 키 (j:자모 / s:특수id) */
     function symbolKey(sym) {
       return sym.type === "jamo" ? `j:${sym.char}` : `s:${sym.id}`;
     }
 
+    /** 심볼 객체 → DOM .symbol 요소 생성 */
     function renderSymbolEl(sym) {
       const div = document.createElement("div");
       div.className = "symbol " + sym.type;
@@ -1531,25 +1648,29 @@
       return div;
     }
 
+    /** 릴 스트립용 len개 심볼 배열 생성 */
     function randomStrip(len) {
       const strip = [];
       for (let i = 0; i < len; i++) strip.push(weightedPick());
       return strip;
     }
 
-    let balance = loadBalance();
-    let bet = 10;
-    let bankPiAmount = 0.01;
+    /* ══════════════════════════════════════
+       9. 게임 런타임 상태·DOM 참조
+       ══════════════════════════════════════ */
+    let balance = loadBalance();  // 현재 KR 잔액
+    let bet = 10;                 // 1회 스핀 베팅액
+    let bankPiAmount = 0.01;      // 입·출금 π 단위
     let sessionKrBet = 0;
     let sessionKrWon = 0;
     let sessionKrDeposited = 0;
-    let spinning = false;
-    let autoMode = false;
-    let stopRequested = false;
-    let reelStrips = [];
-    let reelOffsets = [];
+    let spinning = false;         // 스핀 애니메이션 진행 중
+    let autoMode = false;         // AUTO 연속 스핀 모드
+    let stopRequested = false;    // STOP 버튼 요청 플래그
+    let reelStrips = [];          // 각 릴의 심볼 배열
+    let reelOffsets = [];         // 각 릴의 현재 스크롤 인덱스
 
-    const AUTO_GAP_MS = 700;
+    const AUTO_GAP_MS = 700;      // AUTO 스핀 간격(ms)
     const balanceEl = document.getElementById("balance");
     const betDisplayEl = document.getElementById("betDisplay");
     const lastWinEl = document.getElementById("lastWin");
@@ -1564,6 +1685,7 @@
     const withdrawBtn = document.getElementById("withdrawBtn");
     const freeBtn = document.getElementById("freeBtn");
 
+    /** 스핀/AUTO/입출금 버튼 활성·비활성 상태 동기화 */
     function updateControls() {
       const locked = !isPlayAllowed();
       spinBtn.disabled = locked || spinning || autoMode;
@@ -1584,6 +1706,7 @@
       });
     }
 
+    /** Pi → KR 입금 (1π = PI_TO_KR_RATE KR) */
     async function depositPi() {
       if (spinning || autoMode || piPaymentBusy) return;
       if (!piConnected || !piAccessToken) {
@@ -1677,11 +1800,7 @@
       }
     }
 
-    /**
-     * 게임 종료 · 전액 π 출금
-     * 1) 세션 소모 KR → 제작자 지갑 정산 (서버 settle)
-     * 2) 잔액+당첨금 합산 KR → 유저 지갑 π 지급 (payout)
-     */
+    /** 게임 종료 · 전액 π 출금 (소모 KR → 제작자 / 잔액 → 유저) */
     async function cashOutGamePi() {
       if (spinning || autoMode || piPaymentBusy) return;
       if (autoMode) stopAuto(null);
@@ -1777,6 +1896,7 @@
       }
     }
 
+    /** FREE 보너스 KR 지급 */
     function claimFreeKr() {
       if (spinning || autoMode) return;
       Sfx.unlock();
@@ -1790,6 +1910,7 @@
       messageEl.className = "message win";
     }
 
+    /** AUTO/스핀/TTS 중지 및 UI 복구 */
     function stopAuto(reason) {
       stopRequested = true;
       autoMode = false;
@@ -1802,6 +1923,7 @@
       }
     }
 
+    /** AUTO 모드 시작 → spin() 연쇄 호출 */
     function startAuto() {
       if (!isPlayAllowed() || spinning || autoMode || balance < bet) return;
       Sfx.unlock();
@@ -1813,6 +1935,7 @@
       spin();
     }
 
+    /** AUTO 다음 스핀 예약 (잔액·STOP 확인) */
     async function scheduleNextAuto() {
       if (!autoMode || stopRequested) return;
       if (balance < bet) {
@@ -1857,6 +1980,7 @@
       for (let r = 0; r < REEL_COUNT; r++) positionReel(r, false);
     }
 
+    /** 릴 strip translateY 적용 (animate=true 시 CSS transition) */
     function positionReel(reelIndex, animate, durationMs) {
       syncSymbolHeight();
       const reel = reelsEl.children[reelIndex];
@@ -1871,15 +1995,17 @@
       return dur;
     }
 
+    /** 가운데 행(인덱스+1) 3칸 심볼 배열 반환 — 당첨 판정용 */
     function getVisibleSymbols() {
       const row = [];
       for (let r = 0; r < REEL_COUNT; r++) {
-        const idx = reelOffsets[r] + 1;
+        const idx = reelOffsets[r] + 1; // VISIBLE=3일 때 중앙 줄
         row.push(reelStrips[r][idx]);
       }
       return row;
     }
 
+    /** 가운데 3칸 일치 여부·배당 계산 (자모×8, 특수×mult, 섬 1.2배 보너스) */
     function evaluateWin(row) {
       const keys = row.map(symbolKey);
       if (!keys.every((k) => k === keys[0])) {
@@ -1906,6 +2032,7 @@
       return { payout, desc, triple: true, sym };
     }
 
+    /** 메인 스핀: 베팅 차감 → 릴 애니메이션 → 당첨 판정 → TTS/AUTO */
     async function spin() {
       Sfx.unlock();
       if (!isPlayAllowed()) {
@@ -2001,6 +2128,9 @@
       if (autoMode && !stopRequested) scheduleNextAuto();
     }
 
+    /* ══════════════════════════════════════
+       10. 이벤트 리스너·부팅
+       ══════════════════════════════════════ */
     spinBtn.addEventListener("click", () => {
       stopRequested = false;
       spin();
@@ -2051,6 +2181,7 @@
     freeBtn.addEventListener("click", claimFreeKr);
     piLoginBtn?.addEventListener("click", () => handlePiLogin(false));
 
+    /** CSS --symbol-h와 JS SYMBOL_H 동기화 (반응형 높이) */
     function syncSymbolHeight() {
       const sym = document.querySelector(".symbol");
       if (!sym) return;
@@ -2059,6 +2190,7 @@
     }
 
     let resizeTimer;
+    /** 리사이즈·회전 시 심볼 높이 재계산 후 릴 위치 보정 */
     function onViewportChange() {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
@@ -2067,6 +2199,7 @@
       }, 120);
     }
 
+    /** 게임 초기화 — 릴·HUD·컨트롤 (Pi와 독립 실행) */
     function bootGame() {
       try {
         initReels();
@@ -2078,6 +2211,7 @@
       }
     }
 
+    /* 앱 시작: 게임 즉시 부팅, Pi SDK는 비동기 병렬 초기화 */
     bootGame();
     initPiSdk().catch((err) => console.warn("initPiSdk:", err));
     window.addEventListener("resize", onViewportChange);

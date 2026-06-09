@@ -1,6 +1,7 @@
 /**
  * KRSLOT (한글·섬 슬롯) 백엔드
  * index.html 의 PI_AUTH_VERIFY_URL 및 Pi 결제 콜백과 연동
+ * 배포: https://han-xe9x.onrender.com
  *
  * 보안: PI_API_KEY, PI_WALLET_SEED 등은 .env / 호스팅 환경 변수에만 저장.
  *       이 파일·응답·로그 어디에도 비밀값을 출력하지 않습니다.
@@ -21,6 +22,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const PI_API_KEY = process.env.PI_API_KEY || "";
 const PI_WALLET_SEED = process.env.PI_WALLET_SEED || "";
 const PI_API_BASE = process.env.PI_API_BASE || "https://api.minepi.com";
+const PI_TO_KR_RATE = 3141590;
 
 const DEFAULT_CORS = [
   "https://krslotcaaad0999.pinet.com",
@@ -303,8 +305,61 @@ app.post("/api/pi/payments/complete", paymentLimiter, async (req, res) => {
 });
 
 /**
+ * POST /api/pi/session/settle
+ * 게임 종료 시 소모 KR → 제작자(앱) 지갑 정산 기록
+ * Body: { accessToken, krBalance, krBet, krWon, krConsumed, rate }
+ */
+app.post("/api/pi/session/settle", paymentLimiter, async (req, res) => {
+  const accessToken = req.body?.accessToken;
+  const krBalance = Math.floor(Number(req.body?.krBalance) || 0);
+  const krBet = Math.floor(Number(req.body?.krBet) || 0);
+  const krWon = Math.floor(Number(req.body?.krWon) || 0);
+  const krConsumed = Math.max(
+    0,
+    Math.floor(Number(req.body?.krConsumed) || krBet - krWon)
+  );
+  const rate = Number(req.body?.rate) || PI_TO_KR_RATE;
+
+  if (!accessToken) {
+    return res.status(400).json({ success: false, error: "accessToken required" });
+  }
+
+  try {
+    const me = await verifyAccessToken(accessToken);
+    const housePi = Math.floor((krConsumed / rate) * 1e7) / 1e7;
+    const userPi = Math.floor((krBalance / rate) * 1e7) / 1e7;
+    safeWarn(
+      "[settle]",
+      me.username || me.uid,
+      "krConsumed",
+      krConsumed,
+      "housePi",
+      housePi,
+      "userPi",
+      userPi
+    );
+    return res.json({
+      success: true,
+      krConsumed,
+      krBalance,
+      housePi,
+      userPi,
+      developerWallet: "app_wallet",
+      note: "소모 KR에 해당하는 π는 입금 시 앱 지갑에 보관됩니다.",
+    });
+  } catch (err) {
+    const status = err.status || 502;
+    safeWarn("[settle]", status, err.message);
+    return res.status(status === 401 ? 401 : 502).json({
+      success: false,
+      error: publicError(err, "Session settle failed"),
+    });
+  }
+});
+
+/**
  * POST /api/pi/payments/payout
- * A2U: 승리 상금 등 Pi 코인을 사용자에게 지급 (pi-backend)
+ * A2U: 게임 종료 잔액·상금 → 유저 지갑 π 지급 (pi-backend)
  */
 app.post("/api/pi/payments/payout", paymentLimiter, async (req, res) => {
   const accessToken = req.body?.accessToken;
