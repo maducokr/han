@@ -769,7 +769,7 @@
         <button type="button" class="free-btn" id="freeBtn">FREE</button>
       </div>
     </div>
-    <p class="message" id="message">가운데 <strong>3칸</strong> 모두 일치 시 <strong>KR</strong> 지급 + 발음 5회</p>
+    <p class="message" id="message">가운데 <strong>3칸</strong> 또는 <strong>대각선 2칸</strong> 일치 시 <strong>KR</strong> 지급</p>
     </div>
 
     <div class="pi-bar" id="piPlayRow" hidden>
@@ -1417,15 +1417,20 @@
       return 1.05;
     }
 
-    async function pronounceFiveTimes(sym) {
+    async function pronounceNTimes(sym, times) {
       const text = getPronunciation(sym);
+      const count = Math.max(1, times || PRONOUNCE_TIMES);
       speechSynthesis?.cancel();
-      for (let i = 0; i < PRONOUNCE_TIMES; i++) {
+      for (let i = 0; i < count; i++) {
         if (stopRequested) break;
         await speakOnce(text);
         if (stopRequested) break;
         await delay(180);
       }
+    }
+
+    async function pronounceFiveTimes(sym) {
+      return pronounceNTimes(sym, PRONOUNCE_TIMES);
     }
 
     if (window.speechSynthesis) {
@@ -1871,39 +1876,91 @@
       return dur;
     }
 
-    function getVisibleSymbols() {
-      const row = [];
-      for (let r = 0; r < REEL_COUNT; r++) {
-        const idx = reelOffsets[r] + 1;
-        row.push(reelStrips[r][idx]);
+    /** 3×3 보이는 칸 [행][열] — 행0=위, 행1=가운데, 행2=아래 */
+    function getVisibleGrid() {
+      const grid = [];
+      for (let row = 0; row < VISIBLE; row++) {
+        const line = [];
+        for (let col = 0; col < REEL_COUNT; col++) {
+          line.push(reelStrips[col][reelOffsets[col] + row]);
+        }
+        grid.push(line);
       }
-      return row;
+      return grid;
     }
 
-    function evaluateWin(row) {
-      const keys = row.map(symbolKey);
-      if (!keys.every((k) => k === keys[0])) {
-        return { payout: 0, desc: "", triple: false, sym: null };
-      }
+    const PAYLINES = [
+      { id: "middle", label: "가운데 줄", cells: [[0, 1], [1, 1], [2, 1]], minMatch: 3 },
+      { id: "diagDown", label: "대각선 ↘", cells: [[0, 0], [1, 1], [2, 2]], minMatch: 2 },
+      { id: "diagUp", label: "대각선 ↙", cells: [[0, 2], [1, 1], [2, 0]], minMatch: 2 },
+    ];
 
-      const sym = row[0];
-      const islandIds = ["ieodo", "dokdo", "baengnyeong", "gageo", "gyeokryeol"];
-      let payout;
-      let desc;
+    const ISLAND_IDS = ["ieodo", "dokdo", "baengnyeong", "gageo", "gyeokryeol"];
 
+    function calcSymbolPayout(sym, matchCount, lineLabel, segment) {
+      const seg = segment ? ` (${segment})` : "";
       if (sym.type === "special") {
-        payout = bet * sym.mult;
-        desc = `3칸 올 ${sym.label}! (×${sym.mult})`;
-        if (islandIds.includes(sym.id)) {
-          payout = Math.floor(payout * 1.2);
-          desc += " · 대한민국 영토 보너스";
+        if (matchCount >= 3) {
+          let payout = bet * sym.mult;
+          let desc = `${lineLabel} 3칸 ${sym.label}! (×${sym.mult})`;
+          if (ISLAND_IDS.includes(sym.id)) {
+            payout = Math.floor(payout * 1.2);
+            desc += " · 대한민국 영토 보너스";
+          }
+          return { payout, desc, sym, pronounceTimes: PRONOUNCE_TIMES };
         }
-      } else {
-        payout = bet * 8;
-        desc = `3칸 올 ${sym.char}! ${JAMO_SPEAK[sym.char] || ""} (×8)`;
+        const mult = Math.max(2, Math.floor(sym.mult / 3));
+        return {
+          payout: bet * mult,
+          desc: `${lineLabel} 2칸 ${sym.label}!${seg} (×${mult})`,
+          sym,
+          pronounceTimes: 2,
+        };
       }
+      if (matchCount >= 3) {
+        return {
+          payout: bet * 8,
+          desc: `${lineLabel} 3칸 ${sym.char}! ${JAMO_SPEAK[sym.char] || ""} (×8)`,
+          sym,
+          pronounceTimes: PRONOUNCE_TIMES,
+        };
+      }
+      return {
+        payout: bet * 3,
+        desc: `${lineLabel} 2칸 ${sym.char}! ${JAMO_SPEAK[sym.char] || ""}${seg} (×3)`,
+        sym,
+        pronounceTimes: 2,
+      };
+    }
 
-      return { payout, desc, triple: true, sym };
+    /** 한 줄에서 앞 2칸·뒤 2칸·3칸 일치 검사 */
+    function evaluatePayline(grid, line) {
+      const syms = line.cells.map(([col, row]) => grid[row][col]);
+      const keys = syms.map(symbolKey);
+
+      if (keys.every((k) => k === keys[0])) {
+        return calcSymbolPayout(syms[0], 3, line.label);
+      }
+      if (line.minMatch <= 2) {
+        if (keys[0] === keys[1]) {
+          return calcSymbolPayout(syms[0], 2, line.label, "앞 2칸");
+        }
+        if (keys[1] === keys[2]) {
+          return calcSymbolPayout(syms[1], 2, line.label, "뒤 2칸");
+        }
+      }
+      return null;
+    }
+
+    /** 가운데 3칸 + 대각선 2칸 이상 일치 시 최고 상금 반환 */
+    function evaluateWin() {
+      const grid = getVisibleGrid();
+      const hits = PAYLINES.map((line) => evaluatePayline(grid, line)).filter(Boolean);
+      if (!hits.length) {
+        return { payout: 0, desc: "", sym: null, pronounceTimes: 0 };
+      }
+      hits.sort((a, b) => b.payout - a.payout);
+      return hits[0];
     }
 
     async function spin() {
@@ -1971,22 +2028,22 @@
       await delay(maxDur + 80);
 
       Sfx.stopSpinLoop();
-      const row = getVisibleSymbols();
-      const { payout, desc, sym } = evaluateWin(row);
+      const { payout, desc, sym, pronounceTimes } = evaluateWin();
 
       if (payout > 0) {
         sessionKrWon += payout;
         balance += payout;
         setLastWin(payout);
         const pron = getPronunciation(sym);
+        const times = pronounceTimes || PRONOUNCE_TIMES;
         messageEl.innerHTML =
           `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> — ${desc}<br>` +
-          `<small>「${pron}」 발음 ${PRONOUNCE_TIMES}회 재생 중…</small>`;
+          `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
         messageEl.className = "message win";
         machineEl.classList.add("winning");
         gameFrameEl.classList.add("winning");
         Sfx.winBig();
-        if (!stopRequested) await pronounceFiveTimes(sym);
+        if (!stopRequested) await pronounceNTimes(sym, times);
         if (stopRequested) speechSynthesis?.cancel();
       } else {
         setLastWin(0);
