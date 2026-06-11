@@ -1,0 +1,15 @@
+# 비밀·로컬
+.env
+*.log
+
+# Node
+node_modules/
+backend/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 로컬 전용 (배포 제외)
+index1.html
+에러1.jpg

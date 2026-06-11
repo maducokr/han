@@ -1,0 +1,23 @@
+# Render Blueprint — GitHub maducokr/han 백엔드 배포
+# Dashboard 수동 설정 시:
+#   Root Directory: backend
+#   Build Command:  npm install
+#   Start Command:  npm start
+services:
+  - type: web
+    name: han-xe9x
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PI_API_KEY
+        sync: false
+      - key: PI_WALLET_SEED
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://krslotcaaad0999.pinet.com,https://maducokr.github.io

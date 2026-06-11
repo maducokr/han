@@ -1,0 +1,45 @@
+# GitHub Pages — 프론트엔드만 배포 (index.html + assets)
+# Settings → Pages → Source: GitHub Actions
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare frontend site
+        shell: bash
+        run: |
+          mkdir -p site/assets
+          cp index.html site/
+          cp .nojekyll site/
+          cp -r assets/* site/assets/ 2>/dev/null || true
+          for f in *.jpg *.png *.jpeg *.webp; do
+            [ -f "$f" ] && cp "$f" site/
+          done
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
