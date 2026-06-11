@@ -910,6 +910,13 @@
     let piInitDone = false;  // Pi.init 성공 여부
     const PI_SESSION_KEY = "hangul-slot-pi-session"; // sessionStorage 세션 키
     const PI_DEPOSIT_FLAG_PREFIX = "hangul-slot-pi-deposited-";
+    /**
+     * Pi App Studio 스코프 (범위 최소화)
+     * - 로그인: username 만 (기본)
+     * - π 입금 시: payments 추가 요청
+     */
+    const PI_AUTH_SCOPES_LOGIN = ["username"];
+    const PI_AUTH_SCOPES_PAYMENT = ["username", "payments"];
 
     /** 1π → KR (정수) */
     function piToKr(piAmount) {
@@ -928,8 +935,13 @@
     }
 
     function getPiDepositFlagKey() {
-      const id = piUser?.username || piUser?.uid;
+      const id = piUser?.uid || piUser?.username;
       return id ? `${PI_DEPOSIT_FLAG_PREFIX}${id}` : null;
+    }
+
+    /** 서버 검증된 UID 기준 사용자 식별 (Pi App Studio 권장) */
+    function getPiUserId() {
+      return piUser?.uid || piUser?.username || null;
     }
 
     function markPiDeposited() {
@@ -1007,19 +1019,21 @@
           JSON.stringify({
             accessToken: auth.accessToken,
             user: auth.user,
+            paymentsScopeGranted: !!auth.paymentsScopeGranted,
+            verifiedAt: auth.verifiedAt || Date.now(),
             savedAt: Date.now(),
           })
         );
       } catch (_) {}
     }
 
-    /** 저장된 Pi 세션 복원 (새로고침 후 자동 로그인 UI) */
+    /** 저장된 Pi 세션 복원 (새로고침 후 서버 재검증) */
     function loadPiSession() {
       try {
         const raw = sessionStorage.getItem(PI_SESSION_KEY);
         if (!raw) return null;
         const data = JSON.parse(raw);
-        if (!data?.user) return null;
+        if (!data?.accessToken) return null;
         return data;
       } catch (_) {
         return null;
@@ -1069,13 +1083,7 @@
       return Promise.reject(new Error("Pi SDK 초기화 대기 중입니다. 잠시 후 다시 시도해 주세요."));
     }
 
-    /** Pi.authenticate 필수 콜백 — 미완료 결제 발견 시 (서버 처리 필요 시 확장) */
-    function onIncompletePaymentFound(payment) {
-      console.warn("[Pi] incomplete payment:", payment?.identifier);
-      try {
-        sessionStorage.setItem("pi-incomplete-payment", payment?.identifier || "");
-      } catch (_) {}
-    }
+    const PI_INCOMPLETE_PAYMENT_KEY = "pi-incomplete-payment";
 
     /** Pi 인증 오류 메시지를 사용자 친화 문구로 변환 */
     function formatPiAuthError(err) {
@@ -1105,7 +1113,7 @@
 
     /** Pi 로그인 사용자별 localStorage 키 분리 */
     function getBalanceStorageKey() {
-      const id = piUser?.username || piUser?.uid;
+      const id = getPiUserId();
       return id ? `${STORAGE_KEY}-${id}` : STORAGE_KEY;
     }
 
@@ -1131,43 +1139,137 @@
     /* ══════════════════════════════════════
        5. Pi Network 서비스·UI
        ══════════════════════════════════════ */
-    /** PiService — window.Pi.authenticate 직접 호출 래퍼 */
-    class PiService {
-      /** username 스코프로 Pi 로그인 → accessToken·user 반환 */
-      async login() {
+    /**
+     * PiClient — pi-sdk-js PiSdkBase와 동등 (HTML 단일 파일용)
+     * window.Pi.init / authenticate / createPayment 래핑
+     */
+    class PiClient {
+      async connect() {
         await ensurePiInitialized();
-        const auth = await window.Pi.authenticate(
-          ["username"],
-          onIncompletePaymentFound
-        );
-        if (!auth?.accessToken || !auth?.user) {
-          throw new Error("인증 응답이 올바르지 않습니다.");
-        }
-        piAccessToken = auth.accessToken;
-        savePiSession(auth);
-        console.info("[Pi] auth ok");
-        return {
-          success: true,
-          accessToken: auth.accessToken,
-          user: auth.user,
-        };
+        return true;
+      }
+
+      async authenticate(scopes, onIncompletePaymentFound) {
+        await this.connect();
+        return window.Pi.authenticate(scopes, onIncompletePaymentFound);
+      }
+
+      createPayment(paymentData, callbacks) {
+        return window.Pi.createPayment(paymentData, callbacks);
       }
     }
 
-    /** PI_AUTH_VERIFY_URL이 설정된 경우 서버에 토큰 검증 POST (선택) */
+    /**
+     * PiService — Pi App Studio 권장 패턴
+     * authenticate → accessToken 백엔드 검증(/me) → 검증된 uid 사용
+     */
+    class PiService {
+      constructor() {
+        this.client = new PiClient();
+        this.user = null;
+        this.accessToken = null;
+        this.paymentsScopeGranted = false;
+      }
+
+      /** Pi SDK 필수 콜백 — 미완료 결제 저장 후 로그인 완료 시 백엔드 처리 */
+      onIncompletePaymentFound(payment) {
+        console.warn("[Pi] incomplete payment:", payment?.identifier);
+        try {
+          if (payment?.identifier) {
+            sessionStorage.setItem(PI_INCOMPLETE_PAYMENT_KEY, payment.identifier);
+          }
+        } catch (_) {}
+      }
+
+      /** 미완료 결제 백엔드 approve 시도 */
+      async resolveIncompletePayment(accessToken) {
+        const paymentId = sessionStorage.getItem(PI_INCOMPLETE_PAYMENT_KEY);
+        const base = getPiBackendBase();
+        if (!paymentId || !accessToken || !base) return;
+        try {
+          const res = await fetch(`${base}/api/pi/payments/approve`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ paymentId, accessToken }),
+          });
+          if (res.ok) sessionStorage.removeItem(PI_INCOMPLETE_PAYMENT_KEY);
+        } catch (err) {
+          console.warn("[Pi] incomplete payment resolve:", err);
+        }
+      }
+
+      /**
+       * @param {string[]} scopes — 기본 ['username']
+       */
+      async login(scopes = PI_AUTH_SCOPES_LOGIN) {
+        try {
+          const auth = await this.client.authenticate(
+            scopes,
+            (payment) => this.onIncompletePaymentFound(payment)
+          );
+          if (!auth?.accessToken) {
+            return { success: false, error: "accessToken을 받지 못했습니다." };
+          }
+
+          const verifiedUser = await verifyPiAccessToken(auth.accessToken);
+          await this.resolveIncompletePayment(auth.accessToken);
+
+          this.accessToken = auth.accessToken;
+          this.user = verifiedUser;
+          this.paymentsScopeGranted = scopes.includes("payments");
+
+          piAccessToken = auth.accessToken;
+          piUser = verifiedUser;
+          savePiSession({
+            accessToken: auth.accessToken,
+            user: verifiedUser,
+            paymentsScopeGranted: this.paymentsScopeGranted,
+            verifiedAt: Date.now(),
+          });
+
+          console.info("[Pi] authenticated", verifiedUser.username || verifiedUser.uid);
+          return {
+            success: true,
+            accessToken: auth.accessToken,
+            user: verifiedUser,
+          };
+        } catch (error) {
+          console.error("[Pi] Authentication Error:", error);
+          return { success: false, error: error?.message || "인증에 실패했습니다." };
+        }
+      }
+
+      /** π 입금 전 payments 스코프 확보 (범위 최소화) */
+      async ensurePaymentsAuth() {
+        if (this.paymentsScopeGranted && this.accessToken && this.user) {
+          return { success: true, accessToken: this.accessToken, user: this.user };
+        }
+        return this.login(PI_AUTH_SCOPES_PAYMENT);
+      }
+    }
+
+    /**
+     * accessToken 서버 검증 — Pi Platform API /me (백엔드 경유)
+     * 검증된 uid·username만 신뢰 (프론트 auth.user는 표시용)
+     */
     async function verifyPiAccessToken(accessToken) {
       const url = window.PI_AUTH_VERIFY_URL;
-      if (!url || !accessToken) return;
-      try {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ accessToken }),
-        });
-        if (!res.ok) console.warn("Pi token verify failed:", res.status);
-      } catch (err) {
-        console.warn("Pi token verify error:", err);
+      if (!url || !accessToken) {
+        throw new Error("서버 인증 URL 또는 accessToken이 없습니다.");
       }
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ accessToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success || !data.user?.uid) {
+        throw new Error(data.error || "accessToken 서버 검증에 실패했습니다.");
+      }
+      return {
+        uid: data.user.uid,
+        username: data.user.username || null,
+      };
     }
 
     /** Pi Browser에서 Pi 로그인 UI를 보여줄지 여부 */
@@ -1207,15 +1309,19 @@
         piLoginBtn.hidden = isConn;
         piLoginBtn.disabled = isConn || piLoginBusy;
         if (!isConn && piSdkReady && !piLoginBusy) {
-          piLoginBtn.textContent = "Pi 로그인 후 플레이";
+          piLoginBtn.textContent = "Pi 로그인 (게스트 → 사용자)";
         } else if (!isConn && !piSdkReady && !piLoginBusy) {
           piLoginBtn.textContent = "준비 중…";
         }
       }
       if (piUserProfile) {
         piUserProfile.hidden = !isConn;
-        if (isConn && piUser?.username) {
-          piUserProfile.textContent = `@${piUser.username}`;
+        if (isConn && piUser) {
+          const label = piUser.username ? `@${piUser.username}` : "Pi 사용자";
+          piUserProfile.textContent = label;
+          piUserProfile.title = piUser.uid
+            ? `UID: ${piUser.uid}${piUser.username ? ` · @${piUser.username}` : ""}`
+            : label;
         }
       }
     }
@@ -1226,8 +1332,9 @@
       updatePiUI(true);
       updateHud();
       updateControls();
-      const name = piUser?.username || "Pi 사용자";
-      messageEl.innerHTML = `Pi 로그인 · <strong>${name}</strong>님 환영합니다!`;
+      const name = piUser?.username ? `@${piUser.username}` : "Pi 사용자";
+      const uidHint = piUser?.uid ? `<br><small>UID: ${piUser.uid}</small>` : "";
+      messageEl.innerHTML = `Pi 인증 완료 · <strong>${name}</strong>님 환영합니다!${uidHint}`;
       messageEl.className = "message";
     }
 
@@ -1285,7 +1392,7 @@
         if (result.success) {
           piConnected = true;
           piUser = result.user;
-          await verifyPiAccessToken(result.accessToken);
+          piAccessToken = result.accessToken;
           onPiAuthenticated();
         } else {
           piConnected = false;
@@ -1316,7 +1423,7 @@
         piLoginBusy = false;
         if (piLoginBtn && !piConnected) {
           piLoginBtn.disabled = false;
-          piLoginBtn.textContent = "Pi 로그인 후 플레이";
+          piLoginBtn.textContent = "Pi 로그인 (게스트 → 사용자)";
         }
       }
     }
@@ -1346,11 +1453,28 @@
       }
       piSdkReady = true;
       const saved = loadPiSession();
-      if (saved?.user && window.__PI_INIT_DONE__) {
-        piConnected = true;
-        piUser = saved.user;
-        piAccessToken = saved.accessToken || null;
-        onPiAuthenticated();
+      if (saved?.accessToken && window.__PI_INIT_DONE__) {
+        try {
+          const verifiedUser = await verifyPiAccessToken(saved.accessToken);
+          piConnected = true;
+          piUser = verifiedUser;
+          piAccessToken = saved.accessToken;
+          piService.user = verifiedUser;
+          piService.accessToken = saved.accessToken;
+          piService.paymentsScopeGranted = !!saved.paymentsScopeGranted;
+          await piService.resolveIncompletePayment(saved.accessToken);
+          savePiSession({
+            accessToken: saved.accessToken,
+            user: verifiedUser,
+            paymentsScopeGranted: piService.paymentsScopeGranted,
+            verifiedAt: Date.now(),
+          });
+          onPiAuthenticated();
+        } catch (err) {
+          console.warn("Pi session re-verify failed:", err);
+          clearPiSession();
+          updatePiUI(false);
+        }
       } else {
         updatePiUI(false);
       }
@@ -1742,6 +1866,15 @@
 
       try {
         await ensurePiInitialized();
+        const payAuth = await piService.ensurePaymentsAuth();
+        if (!payAuth.success) {
+          messageEl.textContent = payAuth.error || "π 입금을 위해 payments 권한이 필요합니다.";
+          messageEl.className = "message lose";
+          return;
+        }
+        piAccessToken = payAuth.accessToken || piAccessToken;
+        if (payAuth.user) piUser = payAuth.user;
+
         await new Promise((resolve, reject) => {
           const callbacks = {
             onReadyForServerApproval: async (paymentId) => {
@@ -1765,7 +1898,7 @@
             onError: (error) => reject(error instanceof Error ? error : new Error("π 입금 오류")),
           };
 
-          const ret = window.Pi.createPayment(
+          const ret = piService.client.createPayment(
             {
               amount: piAmount,
               memo: `KRSLOT KR ${krCredit.toLocaleString("ko-KR")} 충전`,
@@ -1774,6 +1907,7 @@
                 piAmount,
                 krAmount: krCredit,
                 rate: PI_TO_KR_RATE,
+                uid: piUser?.uid || null,
                 username: piUser?.username || null,
               },
             },
