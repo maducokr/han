@@ -841,6 +841,14 @@
     let piInitDone = false;
     const PI_SESSION_KEY = "hangul-slot-pi-session";
     const PI_DEPOSIT_FLAG_PREFIX = "hangul-slot-pi-deposited-";
+    /**
+     * Pi App Studio 인증 스코프 (Pi.authenticate 진입점)
+     * - (기본) uid, accessToken — 스코프 없이도 반환
+     * - username — 사용자명 표시
+     * - payments — π 입금(Pi.createPayment) 필수
+     * ※ uid/accessToken은 프론트 표시용만, 서버 /me 검증 후 사용
+     */
+    const PI_AUTH_SCOPES = ["username", "payments"];
 
     function piToKr(piAmount) {
       return Math.floor(Number(piAmount) * PI_TO_KR_RATE);
@@ -858,8 +866,13 @@
     }
 
     function getPiDepositFlagKey() {
-      const id = piUser?.username || piUser?.uid;
+      const id = piUser?.uid || piUser?.username;
       return id ? `${PI_DEPOSIT_FLAG_PREFIX}${id}` : null;
+    }
+
+    /** 서버 검증된 UID 기준 사용자 식별 (Pi App Studio 권장) */
+    function getPiUserId() {
+      return piUser?.uid || piUser?.username || null;
     }
 
     function markPiDeposited() {
@@ -1022,7 +1035,7 @@
     }
 
     function getBalanceStorageKey() {
-      const id = piUser?.username || piUser?.uid;
+      const id = getPiUserId();
       return id ? `${STORAGE_KEY}-${id}` : STORAGE_KEY;
     }
 
@@ -1044,42 +1057,56 @@
     }
 
     /**
-     * PiService — window.Pi 공식 API 직접 사용
+     * PiService — Pi App Studio 인증 (Pi.authenticate)
+     * 1) Pi Browser에서 신원 확인
+     * 2) uid·username·accessToken 획득
+     * 3) accessToken → 백엔드 /api/pi/verify (/me) 서버 검증
      */
     class PiService {
       async login() {
         await ensurePiInitialized();
         const auth = await window.Pi.authenticate(
-          ["username"],
+          PI_AUTH_SCOPES,
           onIncompletePaymentFound
         );
-        if (!auth?.accessToken || !auth?.user) {
-          throw new Error("인증 응답이 올바르지 않습니다.");
+        if (!auth?.accessToken) {
+          throw new Error("accessToken을 받지 못했습니다.");
         }
+        const verifiedUser = await verifyPiAccessToken(auth.accessToken);
         piAccessToken = auth.accessToken;
-        savePiSession(auth);
-        console.info("[Pi] auth ok");
+        piUser = verifiedUser;
+        savePiSession({ accessToken: auth.accessToken, user: verifiedUser });
+        console.info("[Pi] auth verified", verifiedUser.uid);
         return {
           success: true,
           accessToken: auth.accessToken,
-          user: auth.user,
+          user: verifiedUser,
         };
       }
     }
 
+    /**
+     * accessToken 서버 검증 — Pi Platform API /me (백엔드 경유)
+     * 검증된 uid·username만 신뢰 (프론트 auth.user는 표시용)
+     */
     async function verifyPiAccessToken(accessToken) {
       const url = window.PI_AUTH_VERIFY_URL;
-      if (!url || !accessToken) return;
-      try {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ accessToken }),
-        });
-        if (!res.ok) console.warn("Pi token verify failed:", res.status);
-      } catch (err) {
-        console.warn("Pi token verify error:", err);
+      if (!url || !accessToken) {
+        throw new Error("서버 인증 URL 또는 accessToken이 없습니다.");
       }
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ accessToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success || !data.user?.uid) {
+        throw new Error(data.error || "accessToken 서버 검증에 실패했습니다.");
+      }
+      return {
+        uid: data.user.uid,
+        username: data.user.username || null,
+      };
     }
 
     function requiresPiAuth() {
@@ -1123,8 +1150,12 @@
       }
       if (piUserProfile) {
         piUserProfile.hidden = !isConn;
-        if (isConn && piUser?.username) {
-          piUserProfile.textContent = `@${piUser.username}`;
+        if (isConn && piUser) {
+          const label = piUser.username ? `@${piUser.username}` : "Pi 사용자";
+          piUserProfile.textContent = label;
+          piUserProfile.title = piUser.uid
+            ? `UID: ${piUser.uid}${piUser.username ? ` · @${piUser.username}` : ""}`
+            : label;
         }
       }
     }
@@ -1134,8 +1165,9 @@
       updatePiUI(true);
       updateHud();
       updateControls();
-      const name = piUser?.username || "Pi 사용자";
-      messageEl.innerHTML = `Pi 로그인 · <strong>${name}</strong>님 환영합니다!`;
+      const name = piUser?.username ? `@${piUser.username}` : "Pi 사용자";
+      const uidHint = piUser?.uid ? `<br><small>UID: ${piUser.uid}</small>` : "";
+      messageEl.innerHTML = `Pi 인증 완료 · <strong>${name}</strong>님 환영합니다!${uidHint}`;
       messageEl.className = "message";
     }
 
@@ -1252,11 +1284,19 @@
       }
       piSdkReady = true;
       const saved = loadPiSession();
-      if (saved?.user && window.__PI_INIT_DONE__) {
-        piConnected = true;
-        piUser = saved.user;
-        piAccessToken = saved.accessToken || null;
-        onPiAuthenticated();
+      if (saved?.accessToken && window.__PI_INIT_DONE__) {
+        try {
+          const verifiedUser = await verifyPiAccessToken(saved.accessToken);
+          piConnected = true;
+          piUser = verifiedUser;
+          piAccessToken = saved.accessToken;
+          savePiSession({ accessToken: saved.accessToken, user: verifiedUser });
+          onPiAuthenticated();
+        } catch (err) {
+          console.warn("Pi session re-verify failed:", err);
+          clearPiSession();
+          updatePiUI(false);
+        }
       } else {
         updatePiUI(false);
       }
@@ -1651,6 +1691,7 @@
                 piAmount,
                 krAmount: krCredit,
                 rate: PI_TO_KR_RATE,
+                uid: piUser?.uid || null,
                 username: piUser?.username || null,
               },
             },
@@ -1730,6 +1771,7 @@
             krWon: sessionKrWon,
             krConsumed,
             rate: PI_TO_KR_RATE,
+            uid: piUser?.uid || null,
             username: piUser?.username || null,
           }),
         });
@@ -1753,6 +1795,7 @@
               krConsumed,
               piAmount,
               rate: PI_TO_KR_RATE,
+              uid: piUser?.uid || null,
               username: piUser?.username || null,
             },
           }),
