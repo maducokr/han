@@ -3,8 +3,7 @@
      한글 · 섬 슬롯 게임 (단일 HTML)
      - 3릴×3행 슬롯, 가운데 줄 3칸 일치 시 당첨
      - Pi App Studio: Pi Browser + Pi.authenticate 연동
-     - PiNet: https://krslotcaaad0999.pinet.com/
-     - Render: https://han-krslot.onrender.com/
+     - 배포 URL 예: https://maducokr.github.io/han/
      ======================================================================== -->
 <html lang="ko">
 <head>
@@ -769,56 +768,9 @@
       button:hover:not(:disabled) { filter: none; }
       #spinBtn:hover:not(:disabled) { filter: none; }
     }
-
-    /* PiNet·Render(onrender.com) 전용 — 다른 도메인 접속 시 차단 */
-    .pinet-access-block {
-      display: none;
-      position: fixed;
-      inset: 0;
-      z-index: 99999;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-      background: rgba(8, 12, 24, 0.96);
-      color: #e8ecf4;
-      text-align: center;
-    }
-    .pinet-access-block.visible { display: flex; }
-    .pinet-access-block__panel {
-      max-width: 420px;
-      padding: 28px 24px;
-      border-radius: 16px;
-      background: linear-gradient(160deg, #1a2238 0%, #12182a 100%);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
-    }
-    .pinet-access-block__panel h2 {
-      margin: 0 0 12px;
-      font-size: 1.25rem;
-      color: #ffd166;
-    }
-    .pinet-access-block__panel p {
-      margin: 0 0 10px;
-      line-height: 1.55;
-      font-size: 0.95rem;
-      color: #b8c0d4;
-    }
-    .pinet-access-block__panel a {
-      color: #7dd3fc;
-      word-break: break-all;
-    }
-    body.pinet-blocked .game-frame { pointer-events: none; user-select: none; visibility: hidden; }
   </style>
 </head>
 <body>
-  <div id="pinetAccessBlock" class="pinet-access-block" role="alertdialog" aria-labelledby="pinetBlockTitle">
-    <div class="pinet-access-block__panel">
-      <h2 id="pinetBlockTitle">허용된 도메인 전용</h2>
-      <p>이 게임은 아래 주소에서만 이용할 수 있습니다.</p>
-      <p><strong>PiNet</strong><br><a href="https://krslotcaaad0999.pinet.com/">https://krslotcaaad0999.pinet.com/</a></p>
-      <p><strong>Render</strong><br><a href="https://han-krslot.onrender.com/">https://han-krslot.onrender.com/</a></p>
-    </div>
-  </div>
   <!-- ══ 게임 UI 구조 ══
        game-frame > header, hud, machine(릴·컨트롤·입출금), pi-bar(하단) -->
   <div class="game-frame" id="gameFrame">
@@ -949,25 +901,6 @@
       window.PI_AUTH_VERIFY_URL || "https://han-xe9x.onrender.com/api/pi/verify";
     /** 백엔드 API 루트 — π 입·출금 (approve/complete/payout) */
     window.PI_BACKEND_URL = window.PI_BACKEND_URL || "https://han-xe9x.onrender.com";
-    const PI_NET_APP_URL = "https://krslotcaaad0999.pinet.com/";
-    const RENDER_APP_URL = "https://han-krslot.onrender.com/";
-
-    /** PiNet(pinet.com) 또는 Render(onrender.com)에서만 앱 사용 허용 */
-    function isAllowedAppHost() {
-      const host = (location.hostname || "").toLowerCase();
-      if (host === "pinet.com" || host.endsWith(".pinet.com")) return true;
-      if (host === "onrender.com" || host.endsWith(".onrender.com")) return true;
-      return false;
-    }
-
-    function enforceAllowedHost() {
-      if (isAllowedAppHost()) return true;
-      const block = document.getElementById("pinetAccessBlock");
-      if (block) block.classList.add("visible");
-      document.body.classList.add("pinet-blocked");
-      console.warn("[KRSLOT] 허용되지 않은 호스트:", location.hostname);
-      return false;
-    }
 
     /* ══════════════════════════════════════
        3. Pi Network 연동 상태 변수
@@ -2650,10 +2583,8 @@
     }
 
     /* 앱 시작: PiNet 호스트 확인 후 게임·Pi SDK 초기화 */
-    if (enforceAllowedHost()) {
-      bootGame();
-      initPiSdk().catch((err) => console.warn("initPiSdk:", err));
-    }
+    bootGame();
+    initPiSdk().catch((err) => console.warn("initPiSdk:", err));
     window.addEventListener("resize", onViewportChange);
     window.addEventListener("orientationchange", onViewportChange);
     if (window.visualViewport) {
