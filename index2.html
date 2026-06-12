@@ -825,7 +825,7 @@
     <!-- 제목·게임 설명 -->
     <header class="game-header">
       <h1 class="status-pill title-pill">한글 · 섬 슬롯</h1>
-      <p class="status-pill subtitle-pill">3칸 슬롯 · 두꺼비 · 섬 · 배당 <strong>KR</strong> · 3개 일치 시 발음 5회!</p>
+      <p class="status-pill subtitle-pill">두꺼비 100만 · 섬 50만 · 자모 30만 KR → <strong>π 지갑</strong> 당첨!</p>
     </header>
 
     <!-- CASH(잔액) / BET(베팅) / WIN(최근 당첨) -->
@@ -873,7 +873,7 @@
       </div>
     </div>
     <!-- 게임 상태·당첨·Pi 안내 메시지 -->
-    <p class="message" id="message">가운데 <strong>3칸</strong> 또는 <strong>대각선 2칸</strong> 일치 시 <strong>KR</strong> 지급</p>
+    <p class="message" id="message">일치 시 고정 상금 — 두꺼비 <strong>100만</strong> · 섬 <strong>50만</strong> · 자모 <strong>30만 KR</strong> → <strong>π 지갑</strong> 입금</p>
     </div>
 
     <!-- Pi Browser 전용: 로그인 버튼 (Pi가 없으면 hidden 유지) -->
@@ -905,15 +905,20 @@
       ["ㅛ", "ㅑ", "ㅠ", "ㅕ"],     // 13: 모음 ㅛㅑㅠㅕ
     ];
 
-    /** 특수 심볼: 두꺼비·섬 — mult = 베팅 배당 배수 (섬은 +20% 영토 보너스) */
+    /** 특수 심볼: 두꺼비·섬 — 고정 KR 상금 → π 지갑 입금 */
     const SPECIALS = [
-      { id: "tugeobi", label: "두꺼비", speak: "두꺼비", mult: 50 },       // 최고 배당
-      { id: "ieodo", label: "이어도", speak: "이어도", mult: 30 },
-      { id: "dokdo", label: "독도", speak: "독도", mult: 35 },
-      { id: "baengnyeong", label: "백령도", speak: "백령도", mult: 28 },
-      { id: "gageo", label: "가거도", speak: "가거도", mult: 26 },
-      { id: "gyeokryeol", label: "격렬비열도", speak: "격렬비열도", mult: 32 },
+      { id: "tugeobi", label: "두꺼비", speak: "두꺼비", krPrize: 1_000_000 },
+      { id: "ieodo", label: "이어도", speak: "이어도", krPrize: 500_000 },
+      { id: "dokdo", label: "독도", speak: "독도", krPrize: 500_000 },
+      { id: "baengnyeong", label: "백령도", speak: "백령도", krPrize: 500_000 },
+      { id: "gageo", label: "가거도", speak: "가거도", krPrize: 500_000 },
+      { id: "gyeokryeol", label: "격렬비열도", speak: "격렬비열도", krPrize: 500_000 },
     ];
+
+    /** 고정 당첨금 (KR) — π 지갑 입금 시 환산 */
+    const PRIZE_KR_TUGEOBI = 1_000_000;
+    const PRIZE_KR_ISLAND = 500_000;
+    const PRIZE_KR_JAMO = 300_000;
 
     /** TTS 발음용 자모 이름 (당첨 시 5회 재생) */
     const JAMO_SPEAK = {
@@ -1839,7 +1844,7 @@
       } else {
         div.innerHTML = svgIcons[sym.id] + `<span class="sym-label">${sym.label}</span>`;
         div.dataset.special = sym.id;
-        div.dataset.mult = String(sym.mult);
+        div.dataset.krPrize = String(sym.krPrize || PRIZE_KR_ISLAND);
       }
       return div;
     }
@@ -2003,6 +2008,48 @@
       } finally {
         piPaymentBusy = false;
         updateControls();
+      }
+    }
+
+    /**
+     * 당첨금 KR → π 변환 후 유저 Pi 지갑 A2U 입금
+     */
+    async function payWinPi(krAmount, winMeta) {
+      const base = getPiBackendBase();
+      if (!base || !piAccessToken) {
+        return { success: false, skipped: true };
+      }
+      const piAmount = krToPiAmount(krAmount);
+      if (piAmount <= 0) {
+        return { success: false, error: "π 환산 금액이 없습니다." };
+      }
+      try {
+        const res = await fetch(`${base}/api/pi/payments/payout`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            accessToken: piAccessToken,
+            amount: piAmount,
+            memo: `KRSLOT 당첨 ${Math.floor(krAmount).toLocaleString("ko-KR")} KR`,
+            metadata: {
+              type: "win_payout",
+              krAmount: Math.floor(krAmount),
+              piAmount,
+              rate: PI_TO_KR_RATE,
+              uid: piUser?.uid || null,
+              username: piUser?.username || null,
+              ...winMeta,
+            },
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || "π 당첨 지급에 실패했습니다.");
+        }
+        return { success: true, piAmount, paymentId: data.paymentId, txid: data.txid };
+      } catch (err) {
+        console.warn("payWinPi:", err);
+        return { success: false, error: err?.message || "π 당첨 지급 오류" };
       }
     }
 
@@ -2222,39 +2269,37 @@
 
     const ISLAND_IDS = ["ieodo", "dokdo", "baengnyeong", "gageo", "gyeokryeol"];
 
-    function calcSymbolPayout(sym, matchCount, lineLabel, segment) {
-      const seg = segment ? ` (${segment})` : "";
+    function getSymbolKrPrize(sym) {
       if (sym.type === "special") {
-        if (matchCount >= 3) {
-          let payout = bet * sym.mult;
-          let desc = `${lineLabel} 3칸 ${sym.label}! (×${sym.mult})`;
-          if (ISLAND_IDS.includes(sym.id)) {
-            payout = Math.floor(payout * 1.2);
-            desc += " · 대한민국 영토 보너스";
-          }
-          return { payout, desc, sym, pronounceTimes: PRONOUNCE_TIMES };
-        }
-        const mult = Math.max(2, Math.floor(sym.mult / 3));
-        return {
-          payout: bet * mult,
-          desc: `${lineLabel} 2칸 ${sym.label}!${seg} (×${mult})`,
-          sym,
-          pronounceTimes: 2,
-        };
+        if (sym.id === "tugeobi") return PRIZE_KR_TUGEOBI;
+        if (ISLAND_IDS.includes(sym.id)) return PRIZE_KR_ISLAND;
+        return sym.krPrize || PRIZE_KR_ISLAND;
       }
-      if (matchCount >= 3) {
+      return PRIZE_KR_JAMO;
+    }
+
+    function calcSymbolPayout(sym, matchCount, lineLabel, segment) {
+      const krPrize = getSymbolKrPrize(sym);
+      const piPrize = krToPiAmount(krPrize);
+      const seg = segment ? ` (${segment})` : "";
+      const matchText = matchCount >= 3 ? "3칸" : "2칸";
+      const pronounceTimes = matchCount >= 3 ? PRONOUNCE_TIMES : 2;
+
+      if (sym.type === "special") {
         return {
-          payout: bet * 8,
-          desc: `${lineLabel} 3칸 ${sym.char}! ${JAMO_SPEAK[sym.char] || ""} (×8)`,
+          payout: krPrize,
+          piAmount: piPrize,
+          desc: `${lineLabel} ${matchText} ${sym.label}! · ${krPrize.toLocaleString("ko-KR")} KR (≈ ${formatPi(piPrize)})`,
           sym,
-          pronounceTimes: PRONOUNCE_TIMES,
+          pronounceTimes,
         };
       }
       return {
-        payout: bet * 3,
-        desc: `${lineLabel} 2칸 ${sym.char}! ${JAMO_SPEAK[sym.char] || ""}${seg} (×3)`,
+        payout: krPrize,
+        piAmount: piPrize,
+        desc: `${lineLabel} ${matchText} ${sym.char}! ${JAMO_SPEAK[sym.char] || ""}${seg} · ${krPrize.toLocaleString("ko-KR")} KR`,
         sym,
-        pronounceTimes: 2,
+        pronounceTimes,
       };
     }
 
@@ -2353,21 +2398,57 @@
       await delay(maxDur + 80);
 
       Sfx.stopSpinLoop();
-      const { payout, desc, sym, pronounceTimes } = evaluateWin();
+      const { payout, piAmount, desc, sym, pronounceTimes } = evaluateWin();
 
       if (payout > 0) {
         sessionKrWon += payout;
-        balance += payout;
-        setLastWin(payout);
         const pron = getPronunciation(sym);
         const times = pronounceTimes || PRONOUNCE_TIMES;
-        messageEl.innerHTML =
-          `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> — ${desc}<br>` +
-          `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
-        messageEl.className = "message win";
         machineEl.classList.add("winning");
         gameFrameEl.classList.add("winning");
         Sfx.winBig();
+
+        const usePiPayout =
+          isPiBrowserEnv() && piConnected && piAccessToken && getPiBackendBase();
+
+        if (usePiPayout) {
+          piPaymentBusy = true;
+          updateControls();
+          messageEl.innerHTML =
+            `당첨! <strong>${payout.toLocaleString("ko-KR")} KR</strong> → π 지갑 입금 중…<br>` +
+            `<small>${desc}</small>`;
+          messageEl.className = "message win";
+
+          const payResult = await payWinPi(payout, {
+            desc,
+            symbolId: sym?.id || sym?.char || null,
+            symbolLabel: sym?.label || sym?.char || null,
+          });
+          piPaymentBusy = false;
+
+          if (payResult.success) {
+            setLastWin(payout);
+            messageEl.innerHTML =
+              `당첨! <strong>+${formatPi(payResult.piAmount)}</strong> π 지갑 입금 완료<br>` +
+              `<small>${desc}</small><br>` +
+              `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
+          } else {
+            balance += payout;
+            setLastWin(payout);
+            messageEl.innerHTML =
+              `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> (π 입금 실패 → KR 잔액)<br>` +
+              `<small>${payResult.error || "지급 오류"} · ${desc}</small><br>` +
+              `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
+          }
+        } else {
+          balance += payout;
+          setLastWin(payout);
+          messageEl.innerHTML =
+            `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> — ${desc}<br>` +
+            `<small>「${pron}」 발음 ${times}회 · (데모: ≈ ${formatPi(piAmount || krToPiAmount(payout))})</small>`;
+          messageEl.className = "message win";
+        }
+
         if (!stopRequested) await pronounceNTimes(sym, times);
         if (stopRequested) speechSynthesis?.cancel();
       } else {
