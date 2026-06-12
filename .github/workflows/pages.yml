@@ -1,10 +1,11 @@
-# GitHub Pages — 프론트엔드만 배포 (index.html + assets)
+# GitHub Pages — 프론트엔드 (index.html + 법적 문서)
 # Settings → Pages → Source: GitHub Actions
 name: Deploy GitHub Pages
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,14 +28,16 @@ jobs:
       - name: Prepare frontend site
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p site/assets
-          cp index.html site/
-          cp privacy.html site/
-          cp terms.html site/
-          cp .nojekyll site/
-          cp -r assets/* site/assets/ 2>/dev/null || true
-          for f in *.jpg *.png *.jpeg *.webp; do
-            [ -f "$f" ] && cp "$f" site/
+          cp index.html privacy.html terms.html site/
+          cp .nojekyll site/ 2>/dev/null || touch site/.nojekyll
+          if [ -d assets ]; then
+            cp -R assets/. site/assets/
+          fi
+          shopt -s nullglob
+          for f in *.jpg *.jpeg *.png *.webp; do
+            cp "$f" site/
           done
 
       - uses: actions/configure-pages@v5
