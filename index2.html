@@ -3,7 +3,8 @@
      한글 · 섬 슬롯 게임 (단일 HTML)
      - 3릴×3행 슬롯, 가운데 줄 3칸 일치 시 당첨
      - Pi App Studio: Pi Browser + Pi.authenticate 연동
-     - 배포 URL: https://krslotcaaad0999.pinet.com/
+     - PiNet: https://krslotcaaad0999.pinet.com/
+     - Render: https://han-krslot.onrender.com/
      ======================================================================== -->
 <html lang="ko">
 <head>
@@ -769,7 +770,7 @@
       #spinBtn:hover:not(:disabled) { filter: none; }
     }
 
-    /* PiNet(pinet.com) 전용 — 다른 도메인 접속 시 차단 화면 */
+    /* PiNet·Render(onrender.com) 전용 — 다른 도메인 접속 시 차단 */
     .pinet-access-block {
       display: none;
       position: fixed;
@@ -812,10 +813,10 @@
 <body>
   <div id="pinetAccessBlock" class="pinet-access-block" role="alertdialog" aria-labelledby="pinetBlockTitle">
     <div class="pinet-access-block__panel">
-      <h2 id="pinetBlockTitle">PiNet 전용 앱</h2>
-      <p>이 게임은 <strong>PiNet (pinet.com)</strong>에서만 이용할 수 있습니다.</p>
-      <p>Pi Browser에서 아래 주소로 접속해 주세요.</p>
-      <p><a href="https://krslotcaaad0999.pinet.com/">https://krslotcaaad0999.pinet.com/</a></p>
+      <h2 id="pinetBlockTitle">허용된 도메인 전용</h2>
+      <p>이 게임은 아래 주소에서만 이용할 수 있습니다.</p>
+      <p><strong>PiNet</strong><br><a href="https://krslotcaaad0999.pinet.com/">https://krslotcaaad0999.pinet.com/</a></p>
+      <p><strong>Render</strong><br><a href="https://han-krslot.onrender.com/">https://han-krslot.onrender.com/</a></p>
     </div>
   </div>
   <!-- ══ 게임 UI 구조 ══
@@ -944,19 +945,22 @@
     /** 백엔드 API 루트 — π 입·출금 (approve/complete/payout) */
     window.PI_BACKEND_URL = window.PI_BACKEND_URL || "https://han-xe9x.onrender.com";
     const PI_NET_APP_URL = "https://krslotcaaad0999.pinet.com/";
+    const RENDER_APP_URL = "https://han-krslot.onrender.com/";
 
-    /** PiNet(pinet.com) 호스트에서만 앱 사용 허용 */
-    function isPiNetHost() {
+    /** PiNet(pinet.com) 또는 Render(onrender.com)에서만 앱 사용 허용 */
+    function isAllowedAppHost() {
       const host = (location.hostname || "").toLowerCase();
-      return host === "pinet.com" || host.endsWith(".pinet.com");
+      if (host === "pinet.com" || host.endsWith(".pinet.com")) return true;
+      if (host === "onrender.com" || host.endsWith(".onrender.com")) return true;
+      return false;
     }
 
-    function enforcePiNetHost() {
-      if (isPiNetHost()) return true;
+    function enforceAllowedHost() {
+      if (isAllowedAppHost()) return true;
       const block = document.getElementById("pinetAccessBlock");
       if (block) block.classList.add("visible");
       document.body.classList.add("pinet-blocked");
-      console.warn("[KRSLOT] PiNet 전용 — 현재 호스트:", location.hostname);
+      console.warn("[KRSLOT] 허용되지 않은 호스트:", location.hostname);
       return false;
     }
 
@@ -2463,7 +2467,7 @@
     }
 
     /* 앱 시작: PiNet 호스트 확인 후 게임·Pi SDK 초기화 */
-    if (enforcePiNetHost()) {
+    if (enforceAllowedHost()) {
       bootGame();
       initPiSdk().catch((err) => console.warn("initPiSdk:", err));
     }

@@ -1,8 +1,5 @@
-# Render Blueprint — GitHub maducokr/han 백엔드 배포
-# Dashboard 수동 설정 시:
-#   Root Directory: backend
-#   Build Command:  npm install
-#   Start Command:  npm start
+# Render Blueprint — GitHub maducokr/han
+# 백엔드 API: han-xe9x  ·  프론트 정적: han-krslot
 services:
   - type: web
     name: han-xe9x
@@ -20,4 +17,14 @@ services:
       - key: PI_WALLET_SEED
         sync: false
       - key: CORS_ORIGINS
-        value: https://krslotcaaad0999.pinet.com
+        value: https://krslotcaaad0999.pinet.com,https://han-krslot.onrender.com
+
+  - type: web
+    name: han-krslot
+    runtime: static
+    buildCommand: mkdir -p dist && cp index.html index2.html .nojekyll dist/
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

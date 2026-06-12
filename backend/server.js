@@ -26,12 +26,25 @@ const PI_TO_KR_RATE = 3141590;
 
 const DEFAULT_CORS = [
   "https://krslotcaaad0999.pinet.com",
+  "https://han-krslot.onrender.com",
 ];
 
 const corsOrigins = (process.env.CORS_ORIGINS || DEFAULT_CORS.join(","))
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+
+/** PiNet·Render( onrender.com ) Origin 허용 */
+function isAllowedCorsOrigin(origin) {
+  if (!origin) return true;
+  if (corsOrigins.includes(origin)) return true;
+  try {
+    const host = new URL(origin).hostname.toLowerCase();
+    return host === "onrender.com" || host.endsWith(".onrender.com");
+  } catch {
+    return false;
+  }
+}
 
 const SENSITIVE_PATH_RE =
   /(?:^|\/)\.env(?:\/|$|\.|$)|(?:^|\/)\.git(?:\/|$)|(?:^|\/)package(?:-lock)?\.json$|(?:^|\/)server\.js$/i;
@@ -160,7 +173,7 @@ app.use((req, res, next) => {
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || corsOrigins.includes(origin)) {
+      if (isAllowedCorsOrigin(origin)) {
         callback(null, true);
         return;
       }
