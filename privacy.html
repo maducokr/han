@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KRSLOT — Privacy Policy</title>
+  <style>
+    :root { --bg: #0f1624; --text: #e8ecf4; --muted: #a8b4cc; --accent: #7dd3fc; --gold: #ffd166; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+      padding: 24px 16px 48px;
+    }
+    main { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; color: var(--gold); margin: 0 0 8px; }
+    h2 { font-size: 1.1rem; margin: 28px 0 10px; color: #fff; }
+    p, li { color: var(--muted); font-size: 0.95rem; }
+    a { color: var(--accent); }
+    .meta { font-size: 0.85rem; margin-bottom: 24px; }
+    ul { padding-left: 1.25rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>KRSLOT (한글·섬 슬롯) Privacy Policy</h1>
+    <p class="meta">개인정보 처리방침 · Last updated: June 8, 2026</p>
+
+    <p>
+      KRSLOT (“we”, “the App”) is a third-party slot game on Pi Network operated by the app developer.
+      This policy explains what information the App collects when you use it through Pi Browser.
+    </p>
+
+    <h2>1. Information from Pi Network</h2>
+    <p>When you log in with Pi, you consent to share the following with this App (via Pi SDK):</p>
+    <ul>
+      <li><strong>Pi username</strong> — displayed in the game UI</li>
+      <li><strong>Pi UID</strong> — used to identify your game balance and sessions</li>
+      <li><strong>Access token</strong> — sent to our backend only for verification and π payments</li>
+      <li><strong>Payments scope</strong> — only when you choose π deposit (not at login)</li>
+    </ul>
+    <p>
+      Pi Network does not save third-party app data unrelated to Pi on your behalf.
+      We do <strong>not</strong> request or collect location, contacts, photos, or other device data.
+    </p>
+
+    <h2>2. Information we process</h2>
+    <ul>
+      <li>Game balance and bet history (stored locally in your browser: localStorage / sessionStorage)</li>
+      <li>π deposit, payout, and session settlement records (processed via our backend API)</li>
+      <li>Payment metadata (amounts, memos, transaction IDs) required for Pi payments</li>
+    </ul>
+
+    <h2>3. How we use data</h2>
+    <ul>
+      <li>Authenticate you with Pi Platform API (<code>/me</code> verification)</li>
+      <li>Run the game economy (KR balance, π deposit / withdraw / prizes)</li>
+      <li>Prevent abuse (rate limiting on the server)</li>
+    </ul>
+
+    <h2>4. Sharing and storage</h2>
+    <ul>
+      <li>Access tokens are verified on our server (<code>han-xe9x.onrender.com</code>) and are not published publicly.</li>
+      <li>We do not sell your personal information to third parties.</li>
+      <li>Pi payment operations use Pi Network’s official APIs and app wallet.</li>
+    </ul>
+
+    <h2>5. Data retention</h2>
+    <p>
+      Browser session data is cleared when you close the session or clear site data.
+      Server logs may retain anonymized technical records for a limited time for security.
+    </p>
+
+    <h2>6. Your choices</h2>
+    <ul>
+      <li>You may decline Pi login and not use π features (demo mode in non-Pi browsers).</li>
+      <li>You may revoke consent by not using the App; clear browser storage to remove local data.</li>
+    </ul>
+
+    <h2>7. Children</h2>
+    <p>The App is not directed at children under the age required by local law for cryptocurrency use.</p>
+
+    <h2>8. Contact</h2>
+    <p>
+      Developer: KRSLOT / maducokr<br />
+      Repository: <a href="https://github.com/maducokr/han">github.com/maducokr/han</a><br />
+      App URL: <a href="https://maducokr.github.io/han/">maducokr.github.io/han</a>
+    </p>
+
+    <p><a href="index.html">← Back to KRSLOT</a> · <a href="terms.html">Terms of Service</a></p>
+  </main>
+</body>
+</html>

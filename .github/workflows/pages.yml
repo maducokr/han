@@ -29,6 +29,8 @@ jobs:
         run: |
           mkdir -p site/assets
           cp index.html site/
+          cp privacy.html site/
+          cp terms.html site/
           cp .nojekyll site/
           cp -r assets/* site/assets/ 2>/dev/null || true
           for f in *.jpg *.png *.jpeg *.webp; do

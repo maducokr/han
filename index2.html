@@ -254,6 +254,16 @@
       text-align: center;
     }
 
+    .legal-footer {
+      width: 100%;
+      text-align: center;
+      padding: 8px var(--pad-in) 4px;
+      font-size: 0.72rem;
+      color: #8a96b0;
+    }
+    .legal-footer a { color: #7dd3fc; text-decoration: none; }
+    .legal-footer a:hover { text-decoration: underline; }
+
     /* HUD: CASH / BET / WIN 노란 통계 박스 */
     .hud {
       display: flex;
@@ -833,6 +843,11 @@
       <button type="button" class="pi-login-btn" id="piLoginBtn">Pi 로그인 후 플레이</button>
       <span class="status-pill pi-user-pill" id="piUserProfile" hidden></span>
     </div>
+    <p class="legal-footer">
+      <a href="privacy.html">Privacy Policy</a>
+      ·
+      <a href="terms.html">Terms of Service</a>
+    </p>
   </div>
 
   <!-- ══ 게임 로직 (심볼·슬롯·Pi·SFX·TTS) ══ -->
