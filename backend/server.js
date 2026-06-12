@@ -314,22 +314,27 @@ app.post("/api/pi/payments/complete", paymentLimiter, async (req, res) => {
 
 /**
  * POST /api/pi/session/settle
- * 게임 종료 시 소모 KR → 제작자(앱) 지갑 정산 기록
- * Body: { accessToken, krBalance, krBet, krWon, krConsumed, rate }
+ * STOP·게임 종료 시 세션 베팅 KR → π 환산 → 제작자(앱) 지갑 정산
+ * Body: { accessToken, krBalance, krBet, krWon, krConsumed, rate, settleType }
  */
 app.post("/api/pi/session/settle", paymentLimiter, async (req, res) => {
   const accessToken = req.body?.accessToken;
   const krBalance = Math.floor(Number(req.body?.krBalance) || 0);
   const krBet = Math.floor(Number(req.body?.krBet) || 0);
   const krWon = Math.floor(Number(req.body?.krWon) || 0);
+  const settleType = req.body?.settleType || "session_stop";
+  const rate = Number(req.body?.rate) || PI_TO_KR_RATE;
+  /** 베팅 KR 합계 = 제작자 수익 (당첨 π는 A2U로 별도 지급됨) */
   const krConsumed = Math.max(
     0,
-    Math.floor(Number(req.body?.krConsumed) || krBet - krWon)
+    Math.floor(Number(req.body?.krConsumed) || krBet)
   );
-  const rate = Number(req.body?.rate) || PI_TO_KR_RATE;
 
   if (!accessToken) {
     return res.status(400).json({ success: false, error: "accessToken required" });
+  }
+  if (krConsumed <= 0) {
+    return res.status(400).json({ success: false, error: "krConsumed must be positive" });
   }
 
   try {
@@ -338,7 +343,10 @@ app.post("/api/pi/session/settle", paymentLimiter, async (req, res) => {
     const userPi = Math.floor((krBalance / rate) * 1e7) / 1e7;
     safeWarn(
       "[settle]",
+      settleType,
       me.username || me.uid,
+      "krBet",
+      krBet,
       "krConsumed",
       krConsumed,
       "housePi",
@@ -348,12 +356,20 @@ app.post("/api/pi/session/settle", paymentLimiter, async (req, res) => {
     );
     return res.json({
       success: true,
+      settleType,
+      krBet,
+      krWon,
       krConsumed,
       krBalance,
       housePi,
       userPi,
-      developerWallet: "app_wallet",
-      note: "소모 KR에 해당하는 π는 입금 시 앱 지갑에 보관됩니다.",
+      developerWallet: {
+        wallet: "app_wallet",
+        piAmount: housePi,
+        krAmount: krConsumed,
+        status: "deposited",
+      },
+      message: `베팅 ${krConsumed.toLocaleString("ko-KR")} KR (≈ ${housePi} π)이 제작자 지갑에 입금되었습니다.`,
     });
   } catch (err) {
     const status = err.status || 502;

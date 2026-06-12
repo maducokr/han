@@ -1029,8 +1029,94 @@
       return sessionKrDeposited > 0 || balance > 0;
     }
 
+    /** 세션 중 유저가 지불한 베팅 KR 합계 → 제작자 지갑 정산 대상 (당첨 π는 별도 지급) */
     function getSessionKrConsumed() {
-      return Math.max(0, sessionKrBet - sessionKrWon);
+      return Math.max(0, sessionKrBet);
+    }
+
+    /** 베팅 KR → π 환산 후 제작자(앱) 지갑 정산 */
+    async function settleSessionToDeveloper(options) {
+      const opts = options || {};
+      const silent = !!opts.silent;
+      const reason = opts.reason || "session_stop";
+      const krConsumed = getSessionKrConsumed();
+      if (krConsumed <= 0) {
+        return { success: true, skipped: true, krConsumed: 0 };
+      }
+      if (!isPiBrowserEnv() || !piConnected || !piAccessToken) {
+        return { success: false, skipped: true, krConsumed };
+      }
+      const base = getPiBackendBase();
+      if (!base) {
+        return { success: false, skipped: true, krConsumed };
+      }
+      if (spinning) {
+        return { success: false, error: "스핀 진행 중", krConsumed };
+      }
+
+      try {
+        piPaymentBusy = true;
+        updateControls();
+        if (!silent) {
+          messageEl.innerHTML =
+            `베팅 <strong>${krConsumed.toLocaleString("ko-KR")} KR</strong> → 제작자 지갑 π 입금 처리 중…`;
+          messageEl.className = "message";
+        }
+
+        const settleRes = await fetch(`${base}/api/pi/session/settle`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            accessToken: piAccessToken,
+            krBalance: balance,
+            krBet: sessionKrBet,
+            krWon: sessionKrWon,
+            krConsumed,
+            rate: PI_TO_KR_RATE,
+            settleType: reason,
+            uid: piUser?.uid || null,
+            username: piUser?.username || null,
+          }),
+        });
+        const settleData = await settleRes.json().catch(() => ({}));
+        if (!settleRes.ok || !settleData.success) {
+          throw new Error(settleData.error || "제작자 지갑 정산에 실패했습니다.");
+        }
+
+        const housePi =
+          settleData.housePi != null ? Number(settleData.housePi) : krToPiAmount(krConsumed);
+        sessionKrBet = 0;
+        sessionKrWon = 0;
+
+        return {
+          success: true,
+          krConsumed,
+          housePi,
+          message: settleData.message || null,
+        };
+      } catch (err) {
+        console.warn("settleSessionToDeveloper:", err);
+        return { success: false, error: err?.message || "정산 오류", krConsumed };
+      } finally {
+        piPaymentBusy = false;
+        updateControls();
+      }
+    }
+
+    /** STOP·AUTO 종료 시 베팅 KR → 제작자 지갑 정산 */
+    async function onGameStopSettle() {
+      if (spinning || piPaymentBusy || getSessionKrConsumed() <= 0) return;
+      const result = await settleSessionToDeveloper({ reason: "stop" });
+      if (result.success && !result.skipped && result.krConsumed > 0) {
+        messageEl.innerHTML =
+          `정산 완료 · 베팅 <strong>${result.krConsumed.toLocaleString("ko-KR")} KR</strong> → ` +
+          `제작자 지갑 <strong>${formatPi(result.housePi)}</strong> 입금`;
+        messageEl.className = "message win";
+        Sfx.deposit();
+      } else if (!result.success && result.error && result.error !== "busy") {
+        messageEl.innerHTML = `제작자 지갑 정산 실패: ${result.error}`;
+        messageEl.className = "message lose";
+      }
     }
 
     function resetGameSession() {
@@ -2087,22 +2173,29 @@
       messageEl.className = "message";
 
       try {
-        const settleRes = await fetch(`${base}/api/pi/session/settle`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({
-            accessToken: piAccessToken,
-            krBalance,
-            krBet: sessionKrBet,
-            krWon: sessionKrWon,
-            krConsumed,
-            rate: PI_TO_KR_RATE,
-            username: piUser?.username || null,
-          }),
-        });
-        const settleData = await settleRes.json().catch(() => ({}));
-        if (!settleRes.ok || !settleData.success) {
-          throw new Error(settleData.error || "게임 정산(제작자 지갑)에 실패했습니다.");
+        const krConsumed = getSessionKrConsumed();
+        if (krConsumed > 0) {
+          const settleRes = await fetch(`${base}/api/pi/session/settle`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({
+              accessToken: piAccessToken,
+              krBalance,
+              krBet: sessionKrBet,
+              krWon: sessionKrWon,
+              krConsumed,
+              rate: PI_TO_KR_RATE,
+              settleType: "cashout",
+              uid: piUser?.uid || null,
+              username: piUser?.username || null,
+            }),
+          });
+          const settleData = await settleRes.json().catch(() => ({}));
+          if (!settleRes.ok || !settleData.success) {
+            throw new Error(settleData.error || "게임 정산(제작자 지갑)에 실패했습니다.");
+          }
+          sessionKrBet = 0;
+          sessionKrWon = 0;
         }
 
         const payoutRes = await fetch(`${base}/api/pi/payments/payout`, {
@@ -2133,10 +2226,12 @@
         resetGameSession();
         updateHud();
         Sfx.withdraw();
-        const housePi = settleData.housePi != null ? formatPi(settleData.housePi) : formatPi(krToPiAmount(krConsumed));
+        const settleNote =
+          krConsumed > 0
+            ? `<br><small>베팅 ${krConsumed.toLocaleString("ko-KR")} KR → 제작자 지갑 ${formatPi(krToPiAmount(krConsumed))}</small>`
+            : "";
         messageEl.innerHTML =
-          `게임 종료 · <strong>${formatPi(piAmount)}</strong>이 유저 지갑으로 입금되었습니다.<br>` +
-          `<small>소모 ${krConsumed.toLocaleString("ko-KR")} KR → 제작자 지갑 ${housePi} · 잔액 0 KR</small>`;
+          `게임 종료 · <strong>${formatPi(piAmount)}</strong>이 유저 지갑으로 입금되었습니다.${settleNote}`;
         messageEl.className = "message win";
       } catch (err) {
         messageEl.textContent = err?.message || "게임 종료·π 출금에 실패했습니다.";
@@ -2163,7 +2258,6 @@
       messageEl.className = "message win";
     }
 
-    /** AUTO/스핀/TTS 중지 및 UI 복구 */
     function stopAuto(reason) {
       stopRequested = true;
       autoMode = false;
@@ -2173,6 +2267,7 @@
       if (!spinning && reason) {
         messageEl.innerHTML = reason;
         messageEl.className = "message";
+        onGameStopSettle();
       }
     }
 
@@ -2461,6 +2556,10 @@
       spinning = false;
       updateControls();
 
+      if (stopRequested && !autoMode) {
+        await onGameStopSettle();
+      }
+
       if (autoMode && !stopRequested) scheduleNextAuto();
     }
 
@@ -2474,10 +2573,13 @@
 
     autoBtn.addEventListener("click", startAuto);
 
-    stopBtn.addEventListener("click", () => {
+    stopBtn.addEventListener("click", async () => {
       if (!autoMode && !spinning) return;
       const wasAuto = autoMode;
-      stopAuto(wasAuto ? "STOP — 자동 스핀을 중지했습니다." : "STOP — 진행 중인 동작을 중지했습니다.");
+      stopAuto(
+        wasAuto ? "STOP — 자동 스핀을 중지했습니다." : "STOP — 진행 중인 동작을 중지했습니다."
+      );
+      if (!spinning) await onGameStopSettle();
     });
 
     const soundToggle = document.getElementById("soundToggle");
