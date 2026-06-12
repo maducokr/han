@@ -26,11 +26,6 @@ const PI_TO_KR_RATE = 3141590;
 
 const DEFAULT_CORS = [
   "https://krslotcaaad0999.pinet.com",
-  "https://maducokr.github.io", // GitHub Pages (Stellar/Pi 프론트)
-  "http://localhost:5500",
-  "http://127.0.0.1:5500",
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
 ];
 
 const corsOrigins = (process.env.CORS_ORIGINS || DEFAULT_CORS.join(","))

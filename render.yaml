@@ -20,4 +20,4 @@ services:
       - key: PI_WALLET_SEED
         sync: false
       - key: CORS_ORIGINS
-        value: https://krslotcaaad0999.pinet.com,https://maducokr.github.io
+        value: https://krslotcaaad0999.pinet.com
