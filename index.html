@@ -1350,8 +1350,14 @@
       updateControls();
       const name = piUser?.username ? `@${piUser.username}` : "Pi 사용자";
       const uidHint = piUser?.uid ? `<br><small>UID: ${piUser.uid}</small>` : "";
-      messageEl.innerHTML = `Pi 인증 완료 · <strong>${name}</strong>님 환영합니다!${uidHint}`;
-      messageEl.className = "message";
+      const playHint = getPlayBlockMessage();
+      if (playHint) {
+        messageEl.innerHTML = `Pi 인증 완료 · <strong>${name}</strong>님 환영합니다!${uidHint}<br>${playHint}`;
+        messageEl.className = "message lose";
+      } else {
+        messageEl.innerHTML = `Pi 인증 완료 · <strong>${name}</strong>님 환영합니다!${uidHint}`;
+        messageEl.className = "message";
+      }
     }
 
     async function handlePiLogin(silent) {
@@ -1801,10 +1807,15 @@
     const withdrawBtn = document.getElementById("withdrawBtn");
     const freeBtn = document.getElementById("freeBtn");
 
+    function canAffordSpin() {
+      return balance >= bet;
+    }
+
     function updateControls() {
       const locked = !isPlayAllowed();
-      spinBtn.disabled = locked || spinning || autoMode;
-      autoBtn.disabled = locked || spinning || autoMode || balance < bet;
+      const afford = canAffordSpin();
+      spinBtn.disabled = locked || spinning || autoMode || !afford;
+      autoBtn.disabled = locked || spinning || autoMode || !afford;
       autoBtn.classList.toggle("active", autoMode);
       stopBtn.disabled = !autoMode && !spinning;
       const canPiPay = piConnected && !!getPiBackendBase() && isPiBrowserEnv();
@@ -2162,12 +2173,18 @@
       const reel = reelsEl.children[reelIndex];
       if (!reel) return 0;
       const strip = reel.querySelector(".reel-strip");
+      if (!strip) return 0;
       const y = -reelOffsets[reelIndex] * SYMBOL_H;
       const dur = durationMs ?? SPIN_MS + reelIndex * 450;
-      strip.style.transition = animate
-        ? `transform ${dur}ms cubic-bezier(0.15, 0.85, 0.25, 1)`
-        : "none";
-      strip.style.transform = `translateY(${y}px)`;
+      if (!animate) {
+        strip.style.transition = "none";
+        strip.style.transform = `translate3d(0, ${y}px, 0)`;
+        return dur;
+      }
+      strip.style.transition = "none";
+      void strip.offsetHeight;
+      strip.style.transition = `transform ${dur}ms cubic-bezier(0.15, 0.85, 0.25, 1)`;
+      strip.style.transform = `translate3d(0, ${y}px, 0)`;
       return dur;
     }
 
@@ -2278,111 +2295,121 @@
       }
       spinning = true;
       updateControls();
-      speechSynthesis?.cancel();
-      sessionKrBet += bet;
-      balance -= bet;
-      updateHud();
-      Sfx.click();
-      Sfx.spinStart();
-      Sfx.startSpinLoop();
-      messageEl.innerHTML = `베팅 −${bet.toLocaleString("ko-KR")} ${COIN} · 돌아가는 중…`;
-      messageEl.className = "message";
-      machineEl.classList.remove("winning");
-      gameFrameEl.classList.remove("winning");
+      try {
+        speechSynthesis?.cancel();
+        sessionKrBet += bet;
+        balance -= bet;
+        updateHud();
+        Sfx.click();
+        Sfx.spinStart();
+        Sfx.startSpinLoop();
+        messageEl.innerHTML = `베팅 −${bet.toLocaleString("ko-KR")} ${COIN} · 돌아가는 중…`;
+        messageEl.className = "message";
+        machineEl.classList.remove("winning");
+        gameFrameEl.classList.remove("winning");
 
-      const targets = [];
-      for (let r = 0; r < REEL_COUNT; r++) {
-        const extra = 10 + r * 4 + Math.floor(Math.random() * 6);
-        const strip = reelStrips[r];
-        const newSymbols = [];
-        for (let i = 0; i < extra; i++) newSymbols.push(weightedPick());
-        const reelEl = reelsEl.children[r];
-        const stripEl = reelEl.querySelector(".reel-strip");
-        newSymbols.forEach((sym) => stripEl.appendChild(renderSymbolEl(sym)));
-        reelStrips[r] = strip.concat(newSymbols);
-        const maxStart = reelStrips[r].length - VISIBLE - 1;
-        const landing = Math.min(maxStart, reelOffsets[r] + extra);
-        targets.push(landing);
-      }
+        const targets = [];
+        for (let r = 0; r < REEL_COUNT; r++) {
+          const extra = 10 + r * 4 + Math.floor(Math.random() * 6);
+          const strip = reelStrips[r];
+          const newSymbols = [];
+          for (let i = 0; i < extra; i++) newSymbols.push(weightedPick());
+          const reelEl = reelsEl.children[r];
+          const stripEl = reelEl.querySelector(".reel-strip");
+          newSymbols.forEach((sym) => stripEl.appendChild(renderSymbolEl(sym)));
+          reelStrips[r] = strip.concat(newSymbols);
+          const maxStart = reelStrips[r].length - VISIBLE - 1;
+          const landing = Math.min(maxStart, reelOffsets[r] + extra);
+          targets.push(landing);
+        }
 
-      let maxDur = 0;
-      for (let r = 0; r < REEL_COUNT; r++) {
-        reelOffsets[r] = targets[r];
-        const dur = positionReel(r, true);
-        maxDur = Math.max(maxDur, dur);
-        const reelEl = reelsEl.children[r];
-        setTimeout(() => {
-          Sfx.reelStop(r);
-          reelEl.classList.add("stopping");
-          setTimeout(() => reelEl.classList.remove("stopping"), 300);
-        }, dur - 40);
-      }
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
-      await delay(maxDur + 80);
+        let maxDur = 0;
+        for (let r = 0; r < REEL_COUNT; r++) {
+          reelOffsets[r] = targets[r];
+          const dur = positionReel(r, true);
+          maxDur = Math.max(maxDur, dur);
+          const reelEl = reelsEl.children[r];
+          setTimeout(() => {
+            Sfx.reelStop(r);
+            reelEl.classList.add("stopping");
+            setTimeout(() => reelEl.classList.remove("stopping"), 300);
+          }, dur - 40);
+        }
 
-      Sfx.stopSpinLoop();
-      const { payout, piAmount, desc, sym, pronounceTimes } = evaluateWin();
+        await delay(maxDur + 80);
 
-      if (payout > 0) {
-        sessionKrWon += payout;
-        const pron = getPronunciation(sym);
-        const times = pronounceTimes || PRONOUNCE_TIMES;
-        machineEl.classList.add("winning");
-        gameFrameEl.classList.add("winning");
-        Sfx.winBig();
+        Sfx.stopSpinLoop();
+        const { payout, piAmount, desc, sym, pronounceTimes } = evaluateWin();
 
-        const usePiPayout =
-          isPiBrowserEnv() && piConnected && piAccessToken && getPiBackendBase();
+        if (payout > 0) {
+          sessionKrWon += payout;
+          const pron = getPronunciation(sym);
+          const times = pronounceTimes || PRONOUNCE_TIMES;
+          machineEl.classList.add("winning");
+          gameFrameEl.classList.add("winning");
+          Sfx.winBig();
 
-        if (usePiPayout) {
-          piPaymentBusy = true;
-          updateControls();
-          messageEl.innerHTML =
-            `당첨! <strong>${payout.toLocaleString("ko-KR")} KR</strong> → π 지갑 입금 중…<br>` +
-            `<small>${desc}</small>`;
-          messageEl.className = "message win";
+          const usePiPayout =
+            isPiBrowserEnv() && piConnected && piAccessToken && getPiBackendBase();
 
-          const payResult = await payWinPi(payout, {
-            desc,
-            symbolId: sym?.id || sym?.char || null,
-            symbolLabel: sym?.label || sym?.char || null,
-          });
-          piPaymentBusy = false;
-
-          if (payResult.success) {
-            setLastWin(payout);
+          if (usePiPayout) {
+            piPaymentBusy = true;
+            updateControls();
             messageEl.innerHTML =
-              `당첨! <strong>+${formatPi(payResult.piAmount)}</strong> π 지갑 입금 완료<br>` +
-              `<small>${desc}</small><br>` +
-              `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
+              `당첨! <strong>${payout.toLocaleString("ko-KR")} KR</strong> → π 지갑 입금 중…<br>` +
+              `<small>${desc}</small>`;
+            messageEl.className = "message win";
+
+            const payResult = await payWinPi(payout, {
+              desc,
+              symbolId: sym?.id || sym?.char || null,
+              symbolLabel: sym?.label || sym?.char || null,
+            });
+            piPaymentBusy = false;
+
+            if (payResult.success) {
+              setLastWin(payout);
+              messageEl.innerHTML =
+                `당첨! <strong>+${formatPi(payResult.piAmount)}</strong> π 지갑 입금 완료<br>` +
+                `<small>${desc}</small><br>` +
+                `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
+            } else {
+              balance += payout;
+              setLastWin(payout);
+              messageEl.innerHTML =
+                `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> (π 입금 실패 → KR 잔액)<br>` +
+                `<small>${payResult.error || "지급 오류"} · ${desc}</small><br>` +
+                `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
+            }
           } else {
             balance += payout;
             setLastWin(payout);
             messageEl.innerHTML =
-              `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> (π 입금 실패 → KR 잔액)<br>` +
-              `<small>${payResult.error || "지급 오류"} · ${desc}</small><br>` +
-              `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
+              `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> — ${desc}<br>` +
+              `<small>「${pron}」 발음 ${times}회 · (데모: ≈ ${formatPi(piAmount || krToPiAmount(payout))})</small>`;
+            messageEl.className = "message win";
           }
-        } else {
-          balance += payout;
-          setLastWin(payout);
-          messageEl.innerHTML =
-            `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> — ${desc}<br>` +
-            `<small>「${pron}」 발음 ${times}회 · (데모: ≈ ${formatPi(piAmount || krToPiAmount(payout))})</small>`;
-          messageEl.className = "message win";
-        }
 
-        if (!stopRequested) await pronounceNTimes(sym, times);
-        if (stopRequested) speechSynthesis?.cancel();
-      } else {
-        setLastWin(0);
-        messageEl.innerHTML = `당첨 없음 · 베팅 ${bet.toLocaleString("ko-KR")} ${COIN} 차감됨`;
+          if (!stopRequested) await pronounceNTimes(sym, times);
+          if (stopRequested) speechSynthesis?.cancel();
+        } else {
+          setLastWin(0);
+          messageEl.innerHTML = `당첨 없음 · 베팅 ${bet.toLocaleString("ko-KR")} ${COIN} 차감됨`;
+          messageEl.className = "message lose";
+          Sfx.lose();
+        }
+        updateHud();
+      } catch (err) {
+        console.error("spin error:", err);
+        messageEl.innerHTML = "스핀 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.";
         messageEl.className = "message lose";
         Sfx.lose();
+      } finally {
+        spinning = false;
+        updateControls();
       }
-      updateHud();
-      spinning = false;
-      updateControls();
 
       if (stopRequested && !autoMode) {
         await onGameStopSettle();
@@ -2393,6 +2420,15 @@
 
     spinBtn.addEventListener("click", () => {
       stopRequested = false;
+      if (!isPlayAllowed() || !canAffordSpin()) {
+        const blockMsg = getPlayBlockMessage();
+        if (blockMsg) {
+          messageEl.innerHTML = blockMsg;
+          messageEl.className = "message lose";
+          Sfx.lose();
+        }
+        return;
+      }
       spin();
     });
 

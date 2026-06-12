@@ -1,0 +1,11 @@
+#!/bin/sh
+# Auto-push current branch to origin after each successful commit.
+branch=$(git symbolic-ref --short HEAD 2>/dev/null) || exit 0
+remote=$(git config "branch.${branch}.remote" 2>/dev/null)
+[ -z "$remote" ] && remote=origin
+
+printf '[auto-push] Pushing %s to %s...\n' "$branch" "$remote"
+git push "$remote" "$branch" || {
+  printf '[auto-push] Push failed. Run: git push %s %s\n' "$remote" "$branch" >&2
+}
+exit 0
