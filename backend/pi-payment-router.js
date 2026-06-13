@@ -1,5 +1,6 @@
 /**
  * pi-sdk-express 호환 U2A 결제 라우터 (Express)
+ * ※ Rails(pi-sdk-rails) 미사용 — 이 프로젝트 스택은 Express + pi-backend(A2U)
  * @see https://github.com/pi-apps/pi-sdk-express
  * npm 패키지 미배포 시 로컬 구현 — API 경로·페이로드 동일
  */

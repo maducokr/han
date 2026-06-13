@@ -9,8 +9,8 @@
   <!-- Pi App Studio: 기본 Pi SDK (Pi Browser 저수준 연결) -->
   <script src="https://sdk.minepi.com/pi-sdk.js"></script>
   <script>
+    /** pi-sdk 코어: sandbox 감지만 — Pi.init은 PiSdkBase에서 단일 호출 */
     (function () {
-      /** Pi Browser 외부 테스트: ?sandbox=1 또는 localhost */
       function detectPiSandbox() {
         var qs = new URLSearchParams(location.search);
         if (qs.has("sandbox")) {
@@ -25,43 +25,7 @@
         } catch (_) {}
         return false;
       }
-
       window.detectPiSandbox = detectPiSandbox;
-
-      function piHeadInit() {
-        if (window.__PI_INIT_DONE__) return true;
-        if (typeof Pi === "undefined" || typeof Pi.init !== "function") return false;
-        try {
-          var sandbox = detectPiSandbox();
-          var ret = Pi.init({ version: "2.0", sandbox: sandbox });
-          window.__PI_INIT_DONE__ = true;
-          window.__PI_SANDBOX_ACTIVE__ = sandbox;
-          if (ret && typeof ret.then === "function") {
-            ret.catch(function (e) {
-              console.warn("[Pi] init promise error", e);
-            });
-          }
-          return true;
-        } catch (e) {
-          console.warn("[Pi] head init error", e);
-          return false;
-        }
-      }
-
-      function waitPiHeadInit(left) {
-        if (piHeadInit()) return;
-        if (left <= 0) return;
-        setTimeout(function () {
-          waitPiHeadInit(left - 1);
-        }, 200);
-      }
-
-      if (!piHeadInit()) {
-        window.addEventListener("load", function () {
-          waitPiHeadInit(30);
-        });
-        waitPiHeadInit(30);
-      }
     })();
   </script>
   <style>
@@ -1020,30 +984,11 @@
     }
 
     function waitForPiSdk(maxMs) {
-      const limit = maxMs || 8000;
-      return new Promise((resolve) => {
-        if (window.Pi && typeof window.Pi.init === "function") {
-          resolve(true);
-          return;
-        }
-        const t0 = Date.now();
-        const timer = setInterval(() => {
-          if (window.Pi && typeof window.Pi.init === "function") {
-            clearInterval(timer);
-            resolve(true);
-          } else if (Date.now() - t0 >= limit) {
-            clearInterval(timer);
-            resolve(false);
-          }
-        }, 150);
-      });
+      return piSdk.waitForGlobal(maxMs);
     }
 
     function isPiBrowserEnv() {
-      if (typeof window.Pi === "undefined") return false;
-      if (typeof window.Pi.authenticate !== "function") return false;
-      if (typeof window.Pi.init !== "function") return false;
-      return true;
+      return PiSdkBase.isAvailable();
     }
 
     function savePiSession(auth) {
@@ -1104,15 +1049,127 @@
     }
 
     function ensurePiInitialized() {
-      if (!isPiBrowserEnv()) {
-        return Promise.reject(new Error("Pi Browser에서 앱을 열어 주세요."));
-      }
-      if (window.__PI_INIT_DONE__ || piInitDone) {
-        piInitDone = true;
-        return Promise.resolve();
-      }
-      return Promise.reject(new Error("Pi SDK 초기화 대기 중입니다. 잠시 후 다시 시도해 주세요."));
+      return piSdk.ensureReady();
     }
+
+    /**
+     * pi-sdk-js PiSdkBase — 바닐라 JS 유일한 window.Pi 브리지
+     * ※ window.Pi.init / authenticate / createPayment 직접 호출 금지 (중복 인증·경쟁 조건 방지)
+     * @see https://pi-apps.github.io/pi-sdk-docs/
+     */
+    class PiSdkBase {
+      static isAvailable() {
+        return (
+          typeof window.Pi !== "undefined" &&
+          typeof window.Pi.init === "function" &&
+          typeof window.Pi.authenticate === "function" &&
+          typeof window.Pi.createPayment === "function"
+        );
+      }
+
+      constructor() {
+        this._initDone = false;
+        this._initPromise = null;
+        this.user = null;
+        this.accessToken = null;
+        this.connected = false;
+      }
+
+      waitForGlobal(maxMs) {
+        const limit = maxMs || 8000;
+        return new Promise((resolve) => {
+          if (PiSdkBase.isAvailable()) {
+            resolve(true);
+            return;
+          }
+          const t0 = Date.now();
+          const timer = setInterval(() => {
+            if (PiSdkBase.isAvailable()) {
+              clearInterval(timer);
+              resolve(true);
+            } else if (Date.now() - t0 >= limit) {
+              clearInterval(timer);
+              resolve(false);
+            }
+          }, 150);
+        });
+      }
+
+      async init() {
+        if (this._initDone) return;
+        if (this._initPromise) return this._initPromise;
+        this._initPromise = (async () => {
+          const loaded = await this.waitForGlobal(10000);
+          if (!loaded) {
+            throw new Error("Pi Browser에서 앱을 열어 주세요.");
+          }
+          const sandbox = isPiSandboxMode();
+          await Promise.resolve(window.Pi.init({ version: "2.0", sandbox }));
+          window.__PI_INIT_DONE__ = true;
+          window.__PI_SANDBOX_ACTIVE__ = sandbox;
+          this._initDone = true;
+          piInitDone = true;
+        })();
+        try {
+          await this._initPromise;
+        } catch (err) {
+          this._initPromise = null;
+          throw err;
+        }
+      }
+
+      async ensureReady() {
+        if (!PiSdkBase.isAvailable()) {
+          const loaded = await this.waitForGlobal(10000);
+          if (!loaded) {
+            throw new Error("Pi Browser에서 앱을 열어 주세요.");
+          }
+        }
+        await this.init();
+      }
+
+      async connect() {
+        await this.ensureReady();
+        return true;
+      }
+
+      async authenticate(scopes, onIncompletePaymentFound) {
+        await this.ensureReady();
+        const auth = await window.Pi.authenticate(scopes, onIncompletePaymentFound);
+        if (auth?.accessToken) {
+          this.accessToken = auth.accessToken;
+          this.user = auth.user || null;
+          this.connected = true;
+        }
+        return auth;
+      }
+
+      createPayment(paymentData, callbacks) {
+        if (!this._initDone) {
+          throw new Error("Pi SDK가 초기화되지 않았습니다.");
+        }
+        return window.Pi.createPayment(paymentData, callbacks);
+      }
+
+      /** Promise 기반 U2A 결제 (pi-sdk-js + pi-sdk-express 콜백) */
+      createPaymentAsync(paymentData, accessToken) {
+        return new Promise((resolve, reject) => {
+          const callbacks = createU2APaymentCallbacks(accessToken, {
+            onCompleted: resolve,
+            onCancel: () => reject(new Error("π 결제가 취소되었습니다.")),
+            onError: (error) =>
+              reject(error instanceof Error ? error : new Error("π 결제 오류")),
+          });
+          const ret = this.createPayment(paymentData, callbacks);
+          if (ret && typeof ret.then === "function") {
+            ret.catch(reject);
+          }
+        });
+      }
+    }
+
+    const piSdk = new PiSdkBase();
+    window.piSdk = piSdk;
 
     const PI_INCOMPLETE_PAYMENT_KEY = "pi-incomplete-payment";
     const PI_INCOMPLETE_TX_KEY = "pi-incomplete-txid";
@@ -1215,32 +1272,12 @@
     }
 
     /**
-     * PiClient — pi-sdk-js PiSdkBase와 동등 (HTML 단일 파일용)
-     * window.Pi.init / authenticate / createPayment 래핑
-     */
-    class PiClient {
-      async connect() {
-        await ensurePiInitialized();
-        return true;
-      }
-
-      async authenticate(scopes, onIncompletePaymentFound) {
-        await this.connect();
-        return window.Pi.authenticate(scopes, onIncompletePaymentFound);
-      }
-
-      createPayment(paymentData, callbacks) {
-        return window.Pi.createPayment(paymentData, callbacks);
-      }
-    }
-
-    /**
-     * PiService — Pi App Studio 권장 패턴
-     * authenticate → accessToken 백엔드 검증(/me) → 검증된 uid 사용
+     * PiService — pi-sdk-js(PiSdkBase) + pi-sdk-express 백엔드 연동
+     * 인증·결제는 piSdk 경유만 허용 (window.Pi 직접 호출 없음)
      */
     class PiService {
       constructor() {
-        this.client = new PiClient();
+        this.sdk = piSdk;
         this.user = null;
         this.accessToken = null;
         this.paymentsScopeGranted = false;
@@ -1279,9 +1316,8 @@
        */
       async login(scopes = PI_AUTH_SCOPES_LOGIN) {
         try {
-          const auth = await this.client.authenticate(
-            scopes,
-            (payment) => this.onIncompletePaymentFound(payment)
+          const auth = await this.sdk.authenticate(scopes, (payment) =>
+            this.onIncompletePaymentFound(payment)
           );
           if (!auth?.accessToken) {
             return { success: false, error: "accessToken을 받지 못했습니다." };
@@ -1321,6 +1357,16 @@
           return { success: true, accessToken: this.accessToken, user: this.user };
         }
         return this.login(PI_AUTH_SCOPES_PAYMENT);
+      }
+
+      /** U2A π 입금 — piSdk.createPaymentAsync 단일 경로 */
+      async depositU2A(paymentData) {
+        await this.sdk.ensureReady();
+        const token = this.accessToken || piAccessToken;
+        if (!token) {
+          throw new Error("π 입금을 위해 Pi 로그인이 필요합니다.");
+        }
+        return this.sdk.createPaymentAsync(paymentData, token);
       }
     }
 
@@ -1425,7 +1471,7 @@
         }
         return;
       }
-      if (!window.Pi || !isPiBrowserEnv()) {
+      if (!piSdk.isAvailable()) {
         if (!silent) {
           messageEl.innerHTML =
             "Pi Browser에서 앱을 열어 <strong>Pi 로그인</strong>을 진행해 주세요.";
@@ -1435,19 +1481,14 @@
         return;
       }
 
-      if (!window.__PI_INIT_DONE__) {
+      try {
+        await piSdk.ensureReady();
+      } catch (err) {
         if (!silent) {
-          messageEl.textContent = "Pi SDK 준비 중… 잠시 후 다시 눌러 주세요.";
-          messageEl.className = "message";
+          messageEl.textContent = err?.message || "Pi SDK 초기화에 실패했습니다. 앱을 새로고침해 주세요.";
+          messageEl.className = "message lose";
         }
-        await waitForPiSdk(5000);
-        if (!window.__PI_INIT_DONE__) {
-          if (!silent) {
-            messageEl.textContent = "Pi SDK 초기화에 실패했습니다. 앱을 새로고침해 주세요.";
-            messageEl.className = "message lose";
-          }
-          return;
-        }
+        return;
       }
 
       piLoginBusy = true;
@@ -1506,30 +1547,21 @@
     }
 
     async function initPiSdk() {
-      if (!isPiBrowserEnv()) {
+      if (!PiSdkBase.isAvailable()) {
         piSdkReady = true;
         if (piPlayRow) piPlayRow.hidden = true;
         return;
       }
       piService = new PiService();
       window.piService = piService;
-      await waitForPiSdk(10000);
-      if (!window.__PI_INIT_DONE__) {
-        try {
-          const sandbox = isPiSandboxMode();
-          await Promise.resolve(window.Pi.init({ version: "2.0", sandbox }));
-          window.__PI_INIT_DONE__ = true;
-          window.__PI_SANDBOX_ACTIVE__ = sandbox;
-          piInitDone = true;
-        } catch (err) {
-          console.warn("Pi init retry failed:", err);
-        }
-      } else {
-        piInitDone = true;
+      try {
+        await piSdk.ensureReady();
+      } catch (err) {
+        console.warn("initPiSdk:", err);
       }
       piSdkReady = true;
       const saved = loadPiSession();
-      if (saved?.accessToken && window.__PI_INIT_DONE__) {
+      if (saved?.accessToken && piSdk._initDone) {
         try {
           const verifiedUser = await verifyPiAccessToken(saved.accessToken);
           piConnected = true;
@@ -1895,7 +1927,7 @@
         messageEl.className = "message lose";
         return;
       }
-      if (!isPiBrowserEnv() || typeof window.Pi?.createPayment !== "function") {
+      if (!piSdk.isAvailable()) {
         messageEl.innerHTML = "π 입금은 <strong>Pi Browser</strong>에서만 가능합니다.";
         messageEl.className = "message lose";
         return;
@@ -1917,7 +1949,7 @@
       messageEl.className = "message";
 
       try {
-        await ensurePiInitialized();
+        await piSdk.ensureReady();
         const payAuth = await piService.ensurePaymentsAuth();
         if (!payAuth.success) {
           messageEl.textContent = payAuth.error || "π 입금을 위해 payments 권한이 필요합니다.";
@@ -1927,32 +1959,17 @@
         piAccessToken = payAuth.accessToken || piAccessToken;
         if (payAuth.user) piUser = payAuth.user;
 
-        await new Promise((resolve, reject) => {
-          const callbacks = createU2APaymentCallbacks(piAccessToken, {
-            onCompleted: () => resolve(),
-            onCancel: () => reject(new Error("π 입금이 취소되었습니다.")),
-            onError: (error) =>
-              reject(error instanceof Error ? error : new Error("π 입금 오류")),
-          });
-
-          const ret = piService.client.createPayment(
-            {
-              amount: piAmount,
-              memo: `KRSLOT KR ${krCredit.toLocaleString("ko-KR")} 충전`,
-              metadata: {
-                type: "deposit",
-                piAmount,
-                krAmount: krCredit,
-                rate: PI_TO_KR_RATE,
-                uid: piUser?.uid || null,
-                username: piUser?.username || null,
-              },
-            },
-            callbacks
-          );
-          if (ret && typeof ret.then === "function") {
-            ret.catch(reject);
-          }
+        await piService.depositU2A({
+          amount: piAmount,
+          memo: `KRSLOT KR ${krCredit.toLocaleString("ko-KR")} 충전`,
+          metadata: {
+            type: "deposit",
+            piAmount,
+            krAmount: krCredit,
+            rate: PI_TO_KR_RATE,
+            uid: piUser?.uid || null,
+            username: piUser?.username || null,
+          },
         });
 
         balance += krCredit;
