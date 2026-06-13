@@ -983,6 +983,34 @@
       return verify.replace(/\/api\/pi\/verify\/?$/i, "");
     }
 
+    /**
+     * LLM 프레임워크 감지 — 이 프로젝트: vanilla HTML + Express
+     * Express → pi-sdk-express → /payments (approve · complete · …)
+     */
+    const PI_APP_STACK = Object.freeze({
+      frontend: "vanilla-js",
+      frontendPackage: "pi-sdk-js",
+      backend: "express",
+      backendPackage: "pi-sdk-express",
+      paymentsBasePath: "/payments",
+      legacyPaymentsBasePath: "/api/pi/payments",
+    });
+
+    function detectPiAppStack() {
+      return { ...PI_APP_STACK };
+    }
+
+    /** pi-sdk-express U2A 베이스 URL (Express 표준 /payments) */
+    function getPiPaymentsBase() {
+      const custom = (window.PI_PAYMENTS_BASE || "").trim().replace(/\/$/, "");
+      if (custom) return custom;
+      const backend = getPiBackendBase();
+      if (!backend) return "";
+      return `${backend}${PI_APP_STACK.paymentsBasePath}`;
+    }
+
+    window.detectPiAppStack = detectPiAppStack;
+
     function waitForPiSdk(maxMs) {
       return piClient.waitForGlobal(maxMs);
     }
@@ -1057,7 +1085,6 @@
      * GenAI 워크플로:
      *   1) PiClient.authenticate → accessToken
      *   2) createPayment → onReadyForServerApproval(paymentId) → POST /payments/approve
-     *   3) 사용자 블록체인 서명 → txid
      *   4) onReadyForServerCompletion → POST /payments/complete
      */
     class PiClient {
@@ -1200,19 +1227,21 @@
     const PI_INCOMPLETE_PAYMENT_KEY = "pi-incomplete-payment";
     const PI_INCOMPLETE_TX_KEY = "pi-incomplete-txid";
 
-    /** pi-sdk-express / pi-sdk-js U2A 결제 API (백엔드 createPiPaymentRouter) */
-    const PI_U2A_PATHS = {
-      approve: "/api/pi/payments/approve",
-      complete: "/api/pi/payments/complete",
-      cancel: "/api/pi/payments/cancel",
-      error: "/api/pi/payments/error",
-      incomplete: "/api/pi/payments/incomplete",
+    /** pi-sdk-express U2A — Express /payments/* (LLM: Express → pi-sdk-express) */
+    const PI_U2A_SUFFIX = {
+      approve: "/approve",
+      complete: "/complete",
+      cancel: "/cancel",
+      error: "/error",
+      incomplete: "/incomplete",
     };
 
     async function postPiU2A(pathKey, body) {
-      const base = getPiBackendBase();
-      if (!base) throw new Error("백엔드 URL이 설정되지 않았습니다.");
-      const res = await fetch(`${base}${PI_U2A_PATHS[pathKey]}`, {
+      const paymentsBase = getPiPaymentsBase();
+      if (!paymentsBase) throw new Error("백엔드 URL이 설정되지 않았습니다.");
+      const path = PI_U2A_SUFFIX[pathKey];
+      if (!path) throw new Error(`Unknown U2A path: ${pathKey}`);
+      const res = await fetch(`${paymentsBase}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify(body),

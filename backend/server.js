@@ -15,6 +15,7 @@ const rateLimit = require("express-rate-limit");
 const axios = require("axios");
 const PiNetwork = require("pi-backend").default;
 const { PiExpress, createPiPaymentRouter } = require("./pi-payment-router");
+const { PI_STACK } = require("./pi-framework");
 
 const IS_PROD = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT) || 3000;
@@ -189,9 +190,16 @@ const paymentLimiter = rateLimit({
 
 app.use("/api/", globalApiLimiter);
 
-/** 상태 확인 — 비밀·설정 노출 없음 */
+/** 상태 확인 — LLM 스택 감지용 (프레임워크·결제 경로) */
 app.get("/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    pi: {
+      stack: PI_STACK.backend,
+      package: PI_STACK.backendPackage,
+      paymentsPath: PI_STACK.paymentsBasePath,
+    },
+  });
 });
 
 /**
@@ -244,23 +252,27 @@ function getPiExpress() {
 }
 
 /**
- * U2A 결제 — pi-sdk-express PiExpress
- * 프론트 createPayment → paymentId → approve → (블록체인 txid) → complete
+ * U2A 결제 — pi-sdk-express (Express 표준 /payments)
+ * LLM: Express 감지 시 pi-sdk-express → /payments/approve · /payments/complete
  */
-if (PI_API_KEY) {
-  app.use(
-    "/api/pi/payments",
-    paymentLimiter,
-    createPiPaymentRouter({
-      piExpress: getPiExpress(),
-      verifyAccessToken,
-      incompleteCallback: async () => "complete",
-    })
-  );
-} else {
-  app.use("/api/pi/payments", (_req, res) => {
-    res.status(503).json({ success: false, error: "Service unavailable" });
+function createPiPaymentMiddleware() {
+  return createPiPaymentRouter({
+    piExpress: getPiExpress(),
+    verifyAccessToken,
+    incompleteCallback: async () => "complete",
   });
+}
+
+if (PI_API_KEY) {
+  const piPaymentRouter = createPiPaymentMiddleware();
+  app.use(PI_STACK.paymentsBasePath, paymentLimiter, piPaymentRouter);
+  app.use(PI_STACK.legacyPaymentsBasePath, paymentLimiter, piPaymentRouter);
+} else {
+  const unavailable = (_req, res) => {
+    res.status(503).json({ success: false, error: "Service unavailable" });
+  };
+  app.use(PI_STACK.paymentsBasePath, unavailable);
+  app.use(PI_STACK.legacyPaymentsBasePath, unavailable);
 }
 
 /**
