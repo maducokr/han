@@ -199,7 +199,7 @@ const verifyLimiter = rateLimit({
 
 const paymentLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: IS_PROD ? 20 : 80,
+  max: IS_PROD ? 60 : 120,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, error: "Too many requests" },
@@ -211,7 +211,7 @@ app.use("/api/", globalApiLimiter);
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    version: "2026-06-13e",
+    version: "2026-06-13f",
     pi: {
       stack: PI_STACK.backend,
       package: PI_STACK.backendPackage,

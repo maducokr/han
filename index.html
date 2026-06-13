@@ -1317,6 +1317,40 @@
       return standard === legacy ? [standard] : [standard, legacy];
     }
 
+    let paymentKeepAliveTimer = null;
+
+    function startPaymentKeepAlive() {
+      stopPaymentKeepAlive();
+      warmPiBackend().catch(() => {});
+      paymentKeepAliveTimer = setInterval(() => {
+        warmPiBackend().catch(() => {});
+      }, 8000);
+    }
+
+    function stopPaymentKeepAlive() {
+      if (paymentKeepAliveTimer) {
+        clearInterval(paymentKeepAliveTimer);
+        paymentKeepAliveTimer = null;
+      }
+    }
+
+    function formatPiPaymentError(err) {
+      const msg = err?.message || String(err || "");
+      if (/payment_not_found/i.test(msg)) {
+        return "결제 ID를 찾을 수 없습니다. 테스트넷 API Key·sandbox 모드가 일치하는지 확인해 주세요.";
+      }
+      if (/unauthorized|invalid.*key|401/i.test(msg)) {
+        return "Pi API Key가 올바르지 않습니다. Render PI_SANDBOX_API_KEY(Testnet)를 확인해 주세요.";
+      }
+      if (/too many requests|429/i.test(msg)) {
+        return "요청이 너무 많습니다. 1분 후 다시 시도해 주세요.";
+      }
+      if (/failed to fetch|network/i.test(msg)) {
+        return "백엔드 연결 실패. Render 서버 상태를 확인해 주세요.";
+      }
+      return msg || "π 결제에 실패했습니다.";
+    }
+
     async function postPiU2A(pathKey, body) {
       const bases = getPiU2ABases();
       if (!bases.length) throw new Error("백엔드 URL이 설정되지 않았습니다.");
@@ -1395,6 +1429,7 @@
             headers: { "Content-Type": "application/json", Accept: "application/json" },
             body: JSON.stringify({ paymentId: "__warmup__", sandbox: isPiSandboxMode() }),
           });
+          if (res.ok || res.status === 200) return true;
           if (res.status === 400 || res.status === 401 || res.status === 502) return true;
         } catch (_) {}
         await new Promise((r) => setTimeout(r, 600));
@@ -1412,11 +1447,12 @@
         onReadyForServerApproval: async (paymentId) => {
           const t0 = Date.now();
           try {
+            await warmPiBackend();
             await postPiU2A("approve", { paymentId, accessToken });
             console.info("[Pi] approve OK", paymentId, Date.now() - t0, "ms");
           } catch (err) {
             console.error("[Pi] approve FAIL", paymentId, Date.now() - t0, "ms", err);
-            throw err;
+            throw new Error(formatPiPaymentError(err));
           }
         },
         onReadyForServerCompletion: async (paymentId, txid) => {
@@ -2396,6 +2432,7 @@
       Sfx.click();
       piPaymentBusy = true;
       updateControls();
+      startPaymentKeepAlive();
       messageEl.innerHTML = `π 입금 중… <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR</strong>`;
       messageEl.className = "message";
 
@@ -2425,7 +2462,7 @@
           `(보유 ${balance.toLocaleString("ko-KR")} KR) — 이제 게임을 시작할 수 있습니다.`;
         messageEl.className = "message win";
       } catch (err) {
-        const msg = err?.message || "π 입금에 실패했습니다.";
+        const msg = formatPiPaymentError(err);
         let hint = "";
         if (/payments.*scope|without.*payments|결제 권한/i.test(msg)) {
           hint =
@@ -2442,6 +2479,7 @@
         Sfx.lose();
         console.warn("Pi deposit:", err);
       } finally {
+        stopPaymentKeepAlive();
         piPaymentBusy = false;
         updateControls();
       }

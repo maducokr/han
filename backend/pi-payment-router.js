@@ -116,8 +116,8 @@ function resolvePiExpress(options, sandbox) {
 function createApproveHandler(verifyAccessToken, options) {
   const opts = typeof options === "object" && options !== null ? options : { piExpress: options };
   return async function approveHandler(req, res) {
+    const { paymentId, sandbox } = req.body || {};
     try {
-      const { paymentId, sandbox } = req.body || {};
       if (!paymentId) {
         return res.status(400).json({ success: false, error: "paymentId required" });
       }
@@ -135,9 +135,11 @@ function createApproveHandler(verifyAccessToken, options) {
       return res.json({ success: true, result: "approved", paymentId, payment, sandbox: !!sandbox });
     } catch (err) {
       const status = err.status === 401 ? 401 : err.status >= 400 && err.status < 600 ? err.status : 502;
+      const piError = err.message || "Payment approval failed";
+      console.warn("[approve]", paymentId, "sandbox:", !!sandbox, piError);
       return res.status(status).json({
         success: false,
-        error: err.message || "Payment approval failed",
+        error: piError,
       });
     }
   };
