@@ -1320,6 +1320,15 @@
       const msg = err?.message || String(err || "");
       if (/cancel/i.test(msg)) return "로그인이 취소되었습니다.";
       if (/timeout/i.test(msg)) return "연결 시간이 초과되었습니다.";
+      if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+        return "백엔드 연결 실패 — Render 서버가 깨어 있는지 확인 후 다시 시도해 주세요.";
+      }
+      if (/cors|forbidden|403/i.test(msg)) {
+        return "서버 CORS 차단 — 앱 Origin이 백엔드에 허용되지 않았습니다.";
+      }
+      if (/invalid access token|서버 검증|verification failed/i.test(msg)) {
+        return "로그인 토큰 검증 실패 — Pi Browser에서 다시 로그인해 주세요.";
+      }
       if (/not registered|domain|origin|host/i.test(msg)) {
         return "Developer Portal에 앱 URL이 등록되어 있는지 확인해 주세요.";
       }
@@ -1657,24 +1666,49 @@
      * accessToken 서버 검증 — Pi Platform API /me (백엔드 경유)
      * 검증된 uid·username만 신뢰 (프론트 auth.user는 표시용)
      */
-    async function verifyPiAccessToken(accessToken) {
+    async function verifyPiAccessToken(accessToken, retries) {
       const url = window.PI_AUTH_VERIFY_URL;
       if (!url || !accessToken) {
         throw new Error("서버 인증 URL 또는 accessToken이 없습니다.");
       }
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ accessToken }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.success || !data.user?.uid) {
-        throw new Error(data.error || "accessToken 서버 검증에 실패했습니다.");
+      const attempts = Math.max(1, retries ?? 3);
+      let lastError = null;
+      for (let i = 0; i < attempts; i++) {
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({
+              accessToken,
+              sandbox: isPiSandboxMode(),
+            }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.success || !data.user?.uid) {
+            const errMsg = data.error || `accessToken 서버 검증 실패 (${res.status})`;
+            if ((res.status === 502 || res.status === 503) && i < attempts - 1) {
+              await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+              continue;
+            }
+            throw new Error(errMsg);
+          }
+          return {
+            uid: data.user.uid,
+            username: data.user.username || null,
+          };
+        } catch (err) {
+          lastError = err;
+          const msg = err?.message || "";
+          const retryable =
+            /failed to fetch|network|502|503|verification failed/i.test(msg) && i < attempts - 1;
+          if (retryable) {
+            await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+            continue;
+          }
+          throw err;
+        }
       }
-      return {
-        uid: data.user.uid,
-        username: data.user.username || null,
-      };
+      throw lastError || new Error("accessToken 서버 검증에 실패했습니다.");
     }
 
     function requiresPiAuth() {

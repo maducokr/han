@@ -40,6 +40,22 @@ const corsOrigins = (process.env.CORS_ORIGINS || DEFAULT_CORS.join(","))
   .map((s) => s.trim())
   .filter(Boolean);
 
+/** Pi Browser·PiNet·GitHub Pages 등 Origin 허용 (CORS 차단 시 로그인 verify 실패) */
+function isAllowedCorsOrigin(origin) {
+  if (!origin) return true;
+  if (corsOrigins.includes(origin)) return true;
+  try {
+    const { hostname, protocol } = new URL(origin);
+    if (protocol !== "https:" && protocol !== "http:") return false;
+    const host = hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1") return true;
+    const suffixes = ["minepi.com", "pinet.com", "github.io", "onrender.com", "socialchain.app"];
+    return suffixes.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+  } catch {
+    return false;
+  }
+}
+
 const SENSITIVE_PATH_RE =
   /(?:^|\/)\.env(?:\/|$|\.|$)|(?:^|\/)\.git(?:\/|$)|(?:^|\/)package(?:-lock)?\.json$|(?:^|\/)server\.js$/i;
 
@@ -151,7 +167,7 @@ app.use((req, res, next) => {
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || corsOrigins.includes(origin)) {
+      if (isAllowedCorsOrigin(origin)) {
         callback(null, true);
         return;
       }
@@ -194,7 +210,7 @@ app.use("/api/", globalApiLimiter);
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    version: "2026-06-13",
+    version: "2026-06-13b",
     pi: {
       stack: PI_STACK.backend,
       package: PI_STACK.backendPackage,
