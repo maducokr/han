@@ -1097,6 +1097,11 @@
         );
       }
 
+      /** 인스턴스에서도 Pi Browser 여부 확인 (connectPi · depositPi) */
+      isAvailable() {
+        return PiClient.isAvailable();
+      }
+
       constructor() {
         this._initDone = false;
         this._initPromise = null;
@@ -2700,7 +2705,13 @@
     depositBtn.addEventListener("click", depositPi);
     withdrawBtn.addEventListener("click", cashOutGamePi);
     freeBtn.addEventListener("click", claimFreeKr);
-    piLoginBtn?.addEventListener("click", () => handlePiLogin(false));
+    piLoginBtn?.addEventListener("click", () => {
+      handlePiLogin(false).catch((err) => {
+        console.error("Pi login click:", err);
+        messageEl.textContent = formatPiAuthError(err);
+        messageEl.className = "message lose";
+      });
+    });
 
     function syncSymbolHeight() {
       const sym = document.querySelector(".symbol");
