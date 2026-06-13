@@ -619,6 +619,14 @@
     .withdraw-btn:hover:not(:disabled),
     .free-btn:hover:not(:disabled) { filter: brightness(1.08); }
 
+    .deposit-btn:disabled,
+    .withdraw-btn:disabled,
+    .free-btn:disabled {
+      opacity: 0.45;
+      filter: grayscale(0.35);
+      cursor: not-allowed;
+    }
+
     .free-btn {
       background: linear-gradient(180deg, #fde047, #eab308);
       color: #422006;
@@ -1241,21 +1249,41 @@
       incomplete: "/incomplete",
     };
 
+    function getPiU2ABases() {
+      const backend = getPiBackendBase();
+      if (!backend) return [];
+      const standard = `${backend}${PI_APP_STACK.paymentsBasePath}`;
+      const legacy = `${backend}${PI_APP_STACK.legacyPaymentsBasePath}`;
+      const custom = (window.PI_PAYMENTS_BASE || "").trim().replace(/\/$/, "");
+      if (custom) return [custom];
+      return standard === legacy ? [standard] : [standard, legacy];
+    }
+
     async function postPiU2A(pathKey, body) {
-      const paymentsBase = getPiPaymentsBase();
-      if (!paymentsBase) throw new Error("백엔드 URL이 설정되지 않았습니다.");
+      const bases = getPiU2ABases();
+      if (!bases.length) throw new Error("백엔드 URL이 설정되지 않았습니다.");
       const path = PI_U2A_SUFFIX[pathKey];
       if (!path) throw new Error(`Unknown U2A path: ${pathKey}`);
-      const res = await fetch(`${paymentsBase}${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.success === false) {
-        throw new Error(data.error || `π 결제 ${pathKey} 실패 (${res.status})`);
+
+      let lastError = null;
+      for (let i = 0; i < bases.length; i++) {
+        const url = `${bases[i]}${path}`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 404 && i < bases.length - 1) {
+          lastError = new Error(data.error || `π 결제 ${pathKey} 404`);
+          continue;
+        }
+        if (!res.ok || data.success === false) {
+          throw new Error(data.error || `π 결제 ${pathKey} 실패 (${res.status})`);
+        }
+        return data;
       }
-      return data;
+      throw lastError || new Error(`π 결제 ${pathKey} 실패`);
     }
 
     /**
@@ -2077,16 +2105,17 @@
     }
 
     function updateControls() {
-      const locked = !isPlayAllowed();
+      const playLocked = !isPlayAllowed();
       const afford = canAffordSpin();
-      spinBtn.disabled = locked || spinning || autoMode || !afford;
-      autoBtn.disabled = locked || spinning || autoMode || !afford;
+      spinBtn.disabled = playLocked || spinning || autoMode || !afford;
+      autoBtn.disabled = playLocked || spinning || autoMode || !afford;
       autoBtn.classList.toggle("active", autoMode);
       stopBtn.disabled = !autoMode && !spinning;
       const canPiPay = piConnected && !!getPiBackendBase() && isPiBrowserEnv();
-      depositBtn.disabled = locked || spinning || autoMode || piPaymentBusy || !canPiPay;
+      /** 입금은 π 입금 전에도 가능해야 함 (isPlayAllowed는 입금 완료를 요구 → 순환) */
+      depositBtn.disabled = spinning || autoMode || piPaymentBusy || !canPiPay;
       withdrawBtn.disabled =
-        locked || spinning || autoMode || piPaymentBusy || !canPiPay || balance <= 0;
+        playLocked || spinning || autoMode || piPaymentBusy || !canPiPay || balance <= 0;
       if (freeBtn) freeBtn.hidden = isPiBrowserEnv();
       freeBtn.disabled = locked || spinning || autoMode || isPiBrowserEnv();
       document.querySelectorAll(".bet-btn").forEach((b) => {
