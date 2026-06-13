@@ -2202,8 +2202,10 @@
       depositBtn.disabled = spinning || autoMode || piPaymentBusy || !canPiPay;
       withdrawBtn.disabled =
         playLocked || spinning || autoMode || piPaymentBusy || !canPiPay || balance <= 0;
-      if (freeBtn) freeBtn.hidden = isPiBrowserEnv();
-      freeBtn.disabled = locked || spinning || autoMode || isPiBrowserEnv();
+      if (freeBtn) {
+        freeBtn.hidden = isPiBrowserEnv();
+        freeBtn.disabled = playLocked || spinning || autoMode || isPiBrowserEnv();
+      }
       document.querySelectorAll(".bet-btn").forEach((b) => {
         b.disabled = spinning || autoMode;
       });
