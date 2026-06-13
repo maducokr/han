@@ -1115,6 +1115,61 @@
     }
 
     const PI_INCOMPLETE_PAYMENT_KEY = "pi-incomplete-payment";
+    const PI_INCOMPLETE_TX_KEY = "pi-incomplete-txid";
+
+    /** pi-sdk-express / pi-sdk-js U2A 결제 API (백엔드 createPiPaymentRouter) */
+    const PI_U2A_PATHS = {
+      approve: "/api/pi/payments/approve",
+      complete: "/api/pi/payments/complete",
+      cancel: "/api/pi/payments/cancel",
+      error: "/api/pi/payments/error",
+      incomplete: "/api/pi/payments/incomplete",
+    };
+
+    async function postPiU2A(pathKey, body) {
+      const base = getPiBackendBase();
+      if (!base) throw new Error("백엔드 URL이 설정되지 않았습니다.");
+      const res = await fetch(`${base}${PI_U2A_PATHS[pathKey]}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || `π 결제 ${pathKey} 실패 (${res.status})`);
+      }
+      return data;
+    }
+
+    /**
+     * Pi.createPayment 콜백 — pi-sdk-express 페이로드(transactionId) 호환
+     * onReadyForServerApproval은 실패 시 Pi SDK가 ~10초 간격으로 재시도
+     */
+    function createU2APaymentCallbacks(accessToken, handlers) {
+      const h = handlers || {};
+      return {
+        onReadyForServerApproval: (paymentId) =>
+          postPiU2A("approve", { paymentId, accessToken }),
+        onReadyForServerCompletion: async (paymentId, txid) => {
+          await postPiU2A("complete", { paymentId, transactionId: txid, txid });
+          h.onCompleted?.(paymentId, txid);
+        },
+        onCancel: (paymentId) => {
+          postPiU2A("cancel", { paymentId }).catch(() => {});
+          h.onCancel?.(paymentId);
+        },
+        onError: (error, payment) => {
+          const paymentId = payment?.identifier || payment?.paymentId || null;
+          if (paymentId) {
+            postPiU2A("error", {
+              paymentId,
+              error: error?.message || String(error || "unknown"),
+            }).catch(() => {});
+          }
+          h.onError?.(error, payment);
+        },
+      };
+    }
 
     function formatPiAuthError(err) {
       const msg = err?.message || String(err || "");
@@ -1191,28 +1246,29 @@
         this.paymentsScopeGranted = false;
       }
 
-      /** Pi SDK 필수 콜백 — 미완료 결제 저장 후 로그인 완료 시 백엔드 처리 */
+      /** Pi SDK 필수 콜백 — 미완료 결제 저장 (로그인 시 /incomplete 처리) */
       onIncompletePaymentFound(payment) {
         console.warn("[Pi] incomplete payment:", payment?.identifier);
         try {
           if (payment?.identifier) {
             sessionStorage.setItem(PI_INCOMPLETE_PAYMENT_KEY, payment.identifier);
           }
+          const txid = payment?.transaction?.txid || payment?.transaction_id || null;
+          if (txid) {
+            sessionStorage.setItem(PI_INCOMPLETE_TX_KEY, txid);
+          }
         } catch (_) {}
       }
 
-      /** 미완료 결제 백엔드 approve 시도 */
+      /** 미완료 U2A 결제 — pi-sdk-express /incomplete 엔드포인트 */
       async resolveIncompletePayment(accessToken) {
         const paymentId = sessionStorage.getItem(PI_INCOMPLETE_PAYMENT_KEY);
-        const base = getPiBackendBase();
-        if (!paymentId || !accessToken || !base) return;
+        const transactionId = sessionStorage.getItem(PI_INCOMPLETE_TX_KEY);
+        if (!paymentId || !transactionId || !accessToken) return;
         try {
-          const res = await fetch(`${base}/api/pi/payments/approve`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Accept: "application/json" },
-            body: JSON.stringify({ paymentId, accessToken }),
-          });
-          if (res.ok) sessionStorage.removeItem(PI_INCOMPLETE_PAYMENT_KEY);
+          await postPiU2A("incomplete", { paymentId, transactionId, accessToken });
+          sessionStorage.removeItem(PI_INCOMPLETE_PAYMENT_KEY);
+          sessionStorage.removeItem(PI_INCOMPLETE_TX_KEY);
         } catch (err) {
           console.warn("[Pi] incomplete payment resolve:", err);
         }
@@ -1872,27 +1928,12 @@
         if (payAuth.user) piUser = payAuth.user;
 
         await new Promise((resolve, reject) => {
-          const callbacks = {
-            onReadyForServerApproval: async (paymentId) => {
-              const res = await fetch(`${base}/api/pi/payments/approve`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", Accept: "application/json" },
-                body: JSON.stringify({ paymentId, accessToken: piAccessToken }),
-              });
-              if (!res.ok) throw new Error("결제 승인에 실패했습니다.");
-            },
-            onReadyForServerCompletion: async (paymentId, txid) => {
-              const res = await fetch(`${base}/api/pi/payments/complete`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", Accept: "application/json" },
-                body: JSON.stringify({ paymentId, txid, accessToken: piAccessToken }),
-              });
-              if (!res.ok) throw new Error("결제 완료 처리에 실패했습니다.");
-              resolve();
-            },
+          const callbacks = createU2APaymentCallbacks(piAccessToken, {
+            onCompleted: () => resolve(),
             onCancel: () => reject(new Error("π 입금이 취소되었습니다.")),
-            onError: (error) => reject(error instanceof Error ? error : new Error("π 입금 오류")),
-          };
+            onError: (error) =>
+              reject(error instanceof Error ? error : new Error("π 입금 오류")),
+          });
 
           const ret = piService.client.createPayment(
             {

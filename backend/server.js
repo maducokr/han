@@ -14,6 +14,7 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const axios = require("axios");
 const PiNetwork = require("pi-backend").default;
+const { createPiPaymentRouter } = require("./pi-payment-router");
 
 const IS_PROD = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT) || 3000;
@@ -84,22 +85,6 @@ function publicError(err, fallback) {
     return redactSecrets(err.message);
   }
   return fallback;
-}
-
-/** Pi Platform API (Server API Key) */
-function piServerClient() {
-  if (!PI_API_KEY) {
-    throw new Error("PI_API_KEY is not configured");
-  }
-  return axios.create({
-    baseURL: PI_API_BASE,
-    timeout: 20000,
-    headers: {
-      Authorization: `Key ${PI_API_KEY}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-  });
 }
 
 /** accessToken → Pi /v2/me 검증 (index.html verifyPiAccessToken 용) */
@@ -243,66 +228,24 @@ app.post("/api/pi/verify", verifyLimiter, async (req, res) => {
 });
 
 /**
- * POST /api/pi/payments/approve
- * Pi.createPayment → onReadyForServerApproval 연동용 (U2A: 사용자 → 앱 입금)
+ * U2A 결제 — pi-sdk-express 호환 라우터
+ * approve · complete · cancel · error · incomplete
+ * @see https://pi-apps.github.io/pi-sdk-docs/
  */
-app.post("/api/pi/payments/approve", paymentLimiter, async (req, res) => {
-  const paymentId = req.body?.paymentId;
-  const accessToken = req.body?.accessToken;
-  if (!paymentId || !accessToken) {
-    return res.status(400).json({ success: false, error: "paymentId and accessToken required" });
-  }
-  if (!PI_API_KEY) {
-    return res.status(503).json({ success: false, error: "Service unavailable" });
-  }
-
-  try {
-    await verifyAccessToken(accessToken);
-    const client = piServerClient();
-    const { data: payment } = await client.post(`/v2/payments/${paymentId}/approve`);
-    return res.json({ success: true, payment });
-  } catch (err) {
-    const status = err.response?.status || 502;
-    safeWarn("[approve]", paymentId, status, err.message);
-    return res.status(status >= 400 && status < 600 ? status : 502).json({
-      success: false,
-      error: publicError(err, "Payment approval failed"),
-    });
-  }
-});
-
-/**
- * POST /api/pi/payments/complete
- * Pi.createPayment → onReadyForServerCompletion 연동용
- */
-app.post("/api/pi/payments/complete", paymentLimiter, async (req, res) => {
-  const paymentId = req.body?.paymentId;
-  const txid = req.body?.txid;
-  const accessToken = req.body?.accessToken;
-  if (!paymentId || !txid || !accessToken) {
-    return res.status(400).json({
-      success: false,
-      error: "paymentId, txid, and accessToken required",
-    });
-  }
-  if (!PI_API_KEY) {
-    return res.status(503).json({ success: false, error: "Service unavailable" });
-  }
-
-  try {
-    await verifyAccessToken(accessToken);
-    const client = piServerClient();
-    const { data: payment } = await client.post(`/v2/payments/${paymentId}/complete`, { txid });
-    return res.json({ success: true, payment });
-  } catch (err) {
-    const status = err.response?.status || 502;
-    safeWarn("[complete]", paymentId, status, err.message);
-    return res.status(status >= 400 && status < 600 ? status : 502).json({
-      success: false,
-      error: publicError(err, "Payment completion failed"),
-    });
-  }
-});
+if (PI_API_KEY) {
+  app.use(
+    "/api/pi/payments",
+    paymentLimiter,
+    createPiPaymentRouter({
+      verifyAccessToken,
+      incompleteCallback: async () => "complete",
+    })
+  );
+} else {
+  app.use("/api/pi/payments", (_req, res) => {
+    res.status(503).json({ success: false, error: "Service unavailable" });
+  });
+}
 
 /**
  * POST /api/pi/session/settle
