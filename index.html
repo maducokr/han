@@ -1574,12 +1574,59 @@
         }
       }
 
-      /** π 입금 전 payments 스코프 확보 (범위 최소화) */
+      /** π 입금 전 payments 스코프 — Pi SDK에 매번 재인증 (캐시 플래그만으로는 createPayment 불가) */
       async ensurePaymentsAuth() {
-        if (this.paymentsScopeGranted && this.accessToken && this.user) {
-          return { success: true, accessToken: this.accessToken, user: this.user };
+        try {
+          const auth = await this.client.authenticate(PI_AUTH_SCOPES_PAYMENT, onIncompletePayment);
+          if (!auth?.accessToken) {
+            this.paymentsScopeGranted = false;
+            return { success: false, error: "payments 권한이 필요합니다. Pi Browser에서 결제 권한을 허용해 주세요." };
+          }
+
+          let verifiedUser;
+          try {
+            verifiedUser = await verifyPiAccessToken(auth.accessToken);
+          } catch (verifyErr) {
+            const uid = auth.user?.uid;
+            if (uid && /failed to fetch|network|502|503|verification/i.test(verifyErr?.message || "")) {
+              verifiedUser = { uid, username: auth.user?.username || null };
+            } else {
+              throw verifyErr;
+            }
+          }
+
+          this.accessToken = auth.accessToken;
+          this.user = verifiedUser;
+          this.paymentsScopeGranted = true;
+          piAccessToken = auth.accessToken;
+          piUser = verifiedUser;
+          savePiSession({
+            accessToken: auth.accessToken,
+            user: verifiedUser,
+            paymentsScopeGranted: true,
+            verifiedAt: Date.now(),
+          });
+          syncPiConnectionState({
+            connected: true,
+            accessToken: auth.accessToken,
+            user: verifiedUser,
+          });
+
+          return { success: true, accessToken: auth.accessToken, user: verifiedUser };
+        } catch (error) {
+          this.paymentsScopeGranted = false;
+          const msg = error?.message || "";
+          if (/payments.*scope|without.*payments/i.test(msg)) {
+            return {
+              success: false,
+              error: "π 결제 권한(payments)이 없습니다. Pi Browser 팝업에서 결제 권한을 허용해 주세요.",
+            };
+          }
+          if (/cancel/i.test(msg)) {
+            return { success: false, error: "결제 권한 요청이 취소되었습니다." };
+          }
+          return { success: false, error: msg || "payments 권한 요청에 실패했습니다." };
         }
-        return this.login(PI_AUTH_SCOPES_PAYMENT);
       }
 
       /** U2A π 입금 — usePiPurchase().pay() 내부에서만 호출 */
@@ -2328,7 +2375,7 @@
         return;
       }
 
-      messageEl.innerHTML = `π 입금 준비 중… (${isPiSandboxMode() ? "테스트넷" : "메인넷"})`;
+      messageEl.innerHTML = `π 결제 권한 확인 중… (${isPiSandboxMode() ? "테스트넷" : "메인넷"})`;
       messageEl.className = "message";
       await warmPiBackend();
       await warmPiBackendPayments();
@@ -2368,10 +2415,16 @@
           `(보유 ${balance.toLocaleString("ko-KR")} KR) — 이제 게임을 시작할 수 있습니다.`;
         messageEl.className = "message win";
       } catch (err) {
-        const sandboxHint = isPiSandboxMode()
-          ? " 테스트넷 앱은 Render에 <strong>PI_SANDBOX_API_KEY</strong>(Developer Portal Testnet) 설정이 필요합니다."
-          : "";
-        messageEl.innerHTML = (err?.message || "π 입금에 실패했습니다.") + sandboxHint;
+        const msg = err?.message || "π 입금에 실패했습니다.";
+        let hint = "";
+        if (/payments.*scope|without.*payments|결제 권한/i.test(msg)) {
+          hint =
+            "<br><small>로그인은 <strong>username</strong>만 되어 있을 수 있습니다. 입금 시 <strong>payments</strong> 권한 팝업에서 <strong>허용</strong>을 눌러 주세요.</small>";
+        } else if (isPiSandboxMode() && /approve|api key|502|503/i.test(msg)) {
+          hint =
+            "<br><small>Render <strong>PI_SANDBOX_API_KEY</strong>(Developer Portal Testnet) 확인</small>";
+        }
+        messageEl.innerHTML = msg + hint;
         messageEl.className = "message lose";
         Sfx.lose();
         console.warn("Pi deposit:", err);
