@@ -117,18 +117,18 @@ function createApproveHandler(verifyAccessToken, options) {
   const opts = typeof options === "object" && options !== null ? options : { piExpress: options };
   return async function approveHandler(req, res) {
     try {
-      const { accessToken, paymentId, sandbox } = req.body || {};
+      const { paymentId, sandbox } = req.body || {};
       if (!paymentId) {
         return res.status(400).json({ success: false, error: "paymentId required" });
       }
-      if (!accessToken) {
-        return res.status(400).json({ success: false, error: "accessToken required" });
-      }
-      if (verifyAccessToken) {
-        await verifyAccessToken(accessToken);
-      }
+      /* Pi SDK 승인 타임아웃(~20s) — approve를 최우선, accessToken 검증은 생략 */
       const pi = resolvePiExpress(opts, sandbox);
       const payment = await pi.approvePayment(paymentId);
+      if (verifyAccessToken && req.body?.accessToken) {
+        verifyAccessToken(req.body.accessToken).catch((err) => {
+          console.warn("[approve] accessToken verify (non-blocking):", err?.message || err);
+        });
+      }
       return res.json({ success: true, result: "approved", paymentId, payment, sandbox: !!sandbox });
     } catch (err) {
       const status = err.status === 401 ? 401 : err.status >= 400 && err.status < 600 ? err.status : 502;

@@ -211,7 +211,7 @@ app.use("/api/", globalApiLimiter);
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    version: "2026-06-13c",
+    version: "2026-06-13d",
     pi: {
       stack: PI_STACK.backend,
       package: PI_STACK.backendPackage,
@@ -256,8 +256,7 @@ app.post("/api/pi/verify", verifyLimiter, async (req, res) => {
 
 /** pi-sdk-express — sandbox(테스트넷) / production(메인넷) API Key 분리 */
 function getPiExpress(sandbox = false) {
-  const apiKey =
-    sandbox && PI_SANDBOX_API_KEY ? PI_SANDBOX_API_KEY : PI_API_KEY;
+  const apiKey = sandbox ? PI_SANDBOX_API_KEY || PI_API_KEY : PI_API_KEY;
   if (!apiKey) {
     throw new Error(
       sandbox

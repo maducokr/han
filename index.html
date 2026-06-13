@@ -838,6 +838,7 @@
     let piInitDone = false;
     let initPiSdkPromise = null;
     const PI_SESSION_KEY = "hangul-slot-pi-session";
+    const PI_SANDBOX_SESSION_KEY = "hangul-slot-pi-sandbox-mode";
     const PI_DEPOSIT_FLAG_PREFIX = "hangul-slot-pi-deposited-";
     /**
      * Pi App Studio 스코프 (범위 최소화)
@@ -1032,6 +1033,26 @@
       return PiClient.isBrowserReady();
     }
 
+    function syncPiSandboxSession() {
+      const mode = isPiSandboxMode();
+      const prev = sessionStorage.getItem(PI_SANDBOX_SESSION_KEY);
+      const next = mode ? "1" : "0";
+      if (prev !== null && prev !== next) {
+        clearPiSession();
+        piConnected = false;
+        piUser = null;
+        piAccessToken = null;
+        if (piClient) {
+          piClient._initDone = false;
+          piClient._initPromise = null;
+          piClient.accessToken = null;
+          piClient.user = null;
+        }
+      }
+      sessionStorage.setItem(PI_SANDBOX_SESSION_KEY, next);
+      return mode;
+    }
+
     function savePiSession(auth) {
       try {
         sessionStorage.setItem(
@@ -1161,6 +1182,15 @@
       }
 
       async init() {
+        const sandbox = isPiSandboxMode();
+        if (
+          this._initDone &&
+          typeof window.__PI_SANDBOX_ACTIVE__ === "boolean" &&
+          window.__PI_SANDBOX_ACTIVE__ !== sandbox
+        ) {
+          this._initDone = false;
+          this._initPromise = null;
+        }
         if (this._initDone) return;
         if (this._initPromise) return this._initPromise;
         this._initPromise = (async () => {
@@ -1168,7 +1198,6 @@
           if (!loaded) {
             throw new Error("Pi Browser에서 앱을 열어 주세요.");
           }
-          const sandbox = isPiSandboxMode();
           await Promise.resolve(window.Pi.init({ version: "2.0", sandbox }));
           window.__PI_INIT_DONE__ = true;
           window.__PI_SANDBOX_ACTIVE__ = sandbox;
@@ -1346,7 +1375,25 @@
           const res = await fetch(`${base}/health`, { method: "GET" });
           if (res.ok) return true;
         } catch (_) {}
-        await new Promise((r) => setTimeout(r, 1200 * (i + 1)));
+        await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+      }
+      return false;
+    }
+
+    /** 결제 라우터 워밍 — approve 경로 미리 깨우기 */
+    async function warmPiBackendPayments() {
+      const bases = getPiU2ABases();
+      if (!bases.length) return false;
+      for (let i = 0; i < 2; i++) {
+        try {
+          const res = await fetch(`${bases[0]}/approve`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ paymentId: "__warmup__", sandbox: isPiSandboxMode() }),
+          });
+          if (res.status === 400 || res.status === 401 || res.status === 502) return true;
+        } catch (_) {}
+        await new Promise((r) => setTimeout(r, 600));
       }
       return false;
     }
@@ -1358,8 +1405,9 @@
     function createU2APaymentCallbacks(accessToken, handlers) {
       const h = handlers || {};
       return {
-        onReadyForServerApproval: (paymentId) =>
-          postPiU2A("approve", { paymentId, accessToken }),
+        onReadyForServerApproval: async (paymentId) => {
+          await postPiU2A("approve", { paymentId, accessToken });
+        },
         onReadyForServerCompletion: async (paymentId, txid) => {
           await postPiU2A("complete", { paymentId, transactionId: txid, txid });
           h.onCompleted?.(paymentId, txid);
@@ -1870,6 +1918,7 @@
     async function initPiSdk() {
       if (initPiSdkPromise) return initPiSdkPromise;
       initPiSdkPromise = (async () => {
+        syncPiSandboxSession();
         if (!PiClient.isBrowserReady()) {
           const loaded = await piClient.waitForGlobal(8000);
           if (!loaded) {
@@ -2282,6 +2331,7 @@
       messageEl.innerHTML = `π 입금 준비 중… (${isPiSandboxMode() ? "테스트넷" : "메인넷"})`;
       messageEl.className = "message";
       await warmPiBackend();
+      await warmPiBackendPayments();
 
       const piAmount = bankPiAmount;
       const krCredit = piToKr(piAmount);
