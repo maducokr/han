@@ -20,6 +20,10 @@
         var host = location.hostname;
         if (host === "localhost" || host === "127.0.0.1") return true;
         if (host.indexOf("sandbox.minepi.com") !== -1) return true;
+        /* GitHub Pages = 테스트넷 기본 (메인넷: ?sandbox=0) */
+        if (host === "github.io" || host.slice(-10) === ".github.io") {
+          return true;
+        }
         try {
           if (document.referrer.indexOf("sandbox.minepi.com") !== -1) return true;
         } catch (_) {}
@@ -1063,7 +1067,7 @@
 
     const PI_CONNECT_TIMEOUT_MS = 45000;
 
-    /** sandbox: 로컬·sandbox.minepi.com·?sandbox=1 (github.io 프로덕션은 false) */
+    /** sandbox: GitHub Pages·로컬 = 테스트넷 기본 (메인넷: ?sandbox=0) */
     function isPiSandboxMode() {
       if (typeof window.__PI_SANDBOX_ACTIVE__ === "boolean") {
         return window.__PI_SANDBOX_ACTIVE__;
@@ -1079,6 +1083,7 @@
       const host = location.hostname;
       if (host === "localhost" || host === "127.0.0.1") return true;
       if (host.indexOf("sandbox.minepi.com") !== -1) return true;
+      if (host === "github.io" || host.endsWith(".github.io")) return true;
       try {
         if (document.referrer.indexOf("sandbox.minepi.com") !== -1) return true;
       } catch (_) {}
@@ -1285,25 +1290,65 @@
       const path = PI_U2A_SUFFIX[pathKey];
       if (!path) throw new Error(`Unknown U2A path: ${pathKey}`);
 
+      const payload = {
+        ...body,
+        sandbox: body?.sandbox ?? isPiSandboxMode(),
+      };
+      const maxAttempts = pathKey === "approve" ? 5 : 2;
+
       let lastError = null;
       for (let i = 0; i < bases.length; i++) {
         const url = `${bases[i]}${path}`;
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(body),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.status === 404 && i < bases.length - 1) {
-          lastError = new Error(data.error || `π 결제 ${pathKey} 404`);
-          continue;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          try {
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Accept: "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.status === 404 && i < bases.length - 1) {
+              lastError = new Error(data.error || `π 결제 ${pathKey} 404`);
+              break;
+            }
+            if ((res.status === 502 || res.status === 503) && attempt < maxAttempts - 1) {
+              await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+              continue;
+            }
+            if (!res.ok || data.success === false) {
+              throw new Error(data.error || `π 결제 ${pathKey} 실패 (${res.status})`);
+            }
+            return data;
+          } catch (err) {
+            lastError = err;
+            const retryable =
+              pathKey === "approve" &&
+              attempt < maxAttempts - 1 &&
+              /failed to fetch|502|503|network/i.test(err?.message || "");
+            if (retryable) {
+              await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+              continue;
+            }
+            if (i < bases.length - 1 && /404/.test(err?.message || "")) break;
+            throw err;
+          }
         }
-        if (!res.ok || data.success === false) {
-          throw new Error(data.error || `π 결제 ${pathKey} 실패 (${res.status})`);
-        }
-        return data;
       }
       throw lastError || new Error(`π 결제 ${pathKey} 실패`);
+    }
+
+    /** Render 콜드 스타트 방지 — approve 타임아웃 전에 서버 깨우기 */
+    async function warmPiBackend() {
+      const base = getPiBackendBase();
+      if (!base) return false;
+      for (let i = 0; i < 3; i++) {
+        try {
+          const res = await fetch(`${base}/health`, { method: "GET" });
+          if (res.ok) return true;
+        } catch (_) {}
+        await new Promise((r) => setTimeout(r, 1200 * (i + 1)));
+      }
+      return false;
     }
 
     /**
@@ -2234,6 +2279,10 @@
         return;
       }
 
+      messageEl.innerHTML = `π 입금 준비 중… (${isPiSandboxMode() ? "테스트넷" : "메인넷"})`;
+      messageEl.className = "message";
+      await warmPiBackend();
+
       const piAmount = bankPiAmount;
       const krCredit = piToKr(piAmount);
       Sfx.unlock();
@@ -2269,7 +2318,10 @@
           `(보유 ${balance.toLocaleString("ko-KR")} KR) — 이제 게임을 시작할 수 있습니다.`;
         messageEl.className = "message win";
       } catch (err) {
-        messageEl.textContent = err?.message || "π 입금에 실패했습니다.";
+        const sandboxHint = isPiSandboxMode()
+          ? " 테스트넷 앱은 Render에 <strong>PI_SANDBOX_API_KEY</strong>(Developer Portal Testnet) 설정이 필요합니다."
+          : "";
+        messageEl.innerHTML = (err?.message || "π 입금에 실패했습니다.") + sandboxHint;
         messageEl.className = "message lose";
         Sfx.lose();
         console.warn("Pi deposit:", err);

@@ -22,6 +22,7 @@ const PORT = Number(process.env.PORT) || 3000;
 
 /** 런타임에만 메모리에 보관 — export·응답·로그 금지 */
 const PI_API_KEY = process.env.PI_API_KEY || "";
+const PI_SANDBOX_API_KEY = process.env.PI_SANDBOX_API_KEY || "";
 const PI_WALLET_SEED = process.env.PI_WALLET_SEED || "";
 const PI_API_BASE = process.env.PI_API_BASE || "https://api.minepi.com";
 const PI_TO_KR_RATE = 3141590;
@@ -210,11 +211,12 @@ app.use("/api/", globalApiLimiter);
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    version: "2026-06-13b",
+    version: "2026-06-13c",
     pi: {
       stack: PI_STACK.backend,
       package: PI_STACK.backendPackage,
       paymentsPath: PI_STACK.paymentsBasePath,
+      sandboxKeyConfigured: !!PI_SANDBOX_API_KEY,
     },
   });
 });
@@ -252,20 +254,22 @@ app.post("/api/pi/verify", verifyLimiter, async (req, res) => {
   }
 });
 
-/** pi-sdk-express PiExpress — U2A approve/complete + A2U payout(pi-backend) */
-let piExpress = null;
-function getPiExpress() {
-  if (!PI_API_KEY) {
-    throw new Error("PI_API_KEY is not configured");
+/** pi-sdk-express — sandbox(테스트넷) / production(메인넷) API Key 분리 */
+function getPiExpress(sandbox = false) {
+  const apiKey =
+    sandbox && PI_SANDBOX_API_KEY ? PI_SANDBOX_API_KEY : PI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      sandbox
+        ? "PI_SANDBOX_API_KEY is not configured (Developer Portal → Testnet API Key)"
+        : "PI_API_KEY is not configured"
+    );
   }
-  if (!piExpress) {
-    piExpress = new PiExpress({
-      apiKey: PI_API_KEY,
-      walletPrivateSeed: PI_WALLET_SEED,
-      apiBase: PI_API_BASE,
-    });
-  }
-  return piExpress;
+  return new PiExpress({
+    apiKey,
+    walletPrivateSeed: PI_WALLET_SEED,
+    apiBase: PI_API_BASE,
+  });
 }
 
 /**
@@ -274,7 +278,7 @@ function getPiExpress() {
  */
 function createPiPaymentMiddleware() {
   return createPiPaymentRouter({
-    piExpress: getPiExpress(),
+    getPiExpress,
     verifyAccessToken,
     incompleteCallback: async () => "complete",
   });

@@ -106,11 +106,18 @@ class PiExpress {
   }
 }
 
-function createApproveHandler(verifyAccessToken, piExpress) {
-  const pi = piExpress || new PiExpress();
+function resolvePiExpress(options, sandbox) {
+  if (typeof options.getPiExpress === "function") {
+    return options.getPiExpress(!!sandbox);
+  }
+  return options.piExpress || new PiExpress();
+}
+
+function createApproveHandler(verifyAccessToken, options) {
+  const opts = typeof options === "object" && options !== null ? options : { piExpress: options };
   return async function approveHandler(req, res) {
     try {
-      const { accessToken, paymentId } = req.body || {};
+      const { accessToken, paymentId, sandbox } = req.body || {};
       if (!paymentId) {
         return res.status(400).json({ success: false, error: "paymentId required" });
       }
@@ -120,8 +127,9 @@ function createApproveHandler(verifyAccessToken, piExpress) {
       if (verifyAccessToken) {
         await verifyAccessToken(accessToken);
       }
+      const pi = resolvePiExpress(opts, sandbox);
       const payment = await pi.approvePayment(paymentId);
-      return res.json({ success: true, result: "approved", paymentId, payment });
+      return res.json({ success: true, result: "approved", paymentId, payment, sandbox: !!sandbox });
     } catch (err) {
       const status = err.status === 401 ? 401 : err.status >= 400 && err.status < 600 ? err.status : 502;
       return res.status(status).json({
@@ -132,11 +140,11 @@ function createApproveHandler(verifyAccessToken, piExpress) {
   };
 }
 
-function createCompleteHandler(piExpress) {
-  const pi = piExpress || new PiExpress();
+function createCompleteHandler(options) {
+  const opts = typeof options === "object" && options !== null ? options : { piExpress: options };
   return async function completeHandler(req, res) {
     try {
-      const { paymentId } = req.body || {};
+      const { paymentId, sandbox } = req.body || {};
       const txid = pickTransactionId(req.body);
       if (!paymentId || !txid) {
         return res.status(400).json({
@@ -144,6 +152,7 @@ function createCompleteHandler(piExpress) {
           error: "paymentId and txid required",
         });
       }
+      const pi = resolvePiExpress(opts, sandbox);
       const payment = await pi.completePayment(paymentId, txid);
       return res.json({ success: true, result: "completed", paymentId, payment });
     } catch (err) {
@@ -156,14 +165,15 @@ function createCompleteHandler(piExpress) {
   };
 }
 
-function createCancelHandler(piExpress) {
-  const pi = piExpress || new PiExpress();
+function createCancelHandler(options) {
+  const opts = typeof options === "object" && options !== null ? options : { piExpress: options };
   return async function cancelHandler(req, res) {
     try {
-      const { paymentId } = req.body || {};
+      const { paymentId, sandbox } = req.body || {};
       if (!paymentId) {
         return res.status(400).json({ success: false, error: "paymentId required" });
       }
+      const pi = resolvePiExpress(opts, sandbox);
       const payment = await pi.cancelPayment(paymentId);
       return res.json({ success: true, result: "cancelled", paymentId, payment });
     } catch (err) {
@@ -184,11 +194,11 @@ function createErrorHandler() {
   };
 }
 
-function createIncompleteHandler(incompleteCallback, piExpress) {
-  const pi = piExpress || new PiExpress();
+function createIncompleteHandler(incompleteCallback, options) {
+  const opts = typeof options === "object" && options !== null ? options : { piExpress: options };
   return async function incompleteHandler(req, res) {
     try {
-      const { paymentId } = req.body || {};
+      const { paymentId, sandbox } = req.body || {};
       const txid = pickTransactionId(req.body);
       if (!paymentId || !txid) {
         return res.status(400).json({
@@ -203,6 +213,7 @@ function createIncompleteHandler(incompleteCallback, piExpress) {
         decision = result === "cancel" ? "cancel" : "complete";
       }
 
+      const pi = resolvePiExpress(opts, sandbox);
       const payment =
         decision === "cancel"
           ? await pi.cancelPayment(paymentId)
@@ -225,23 +236,24 @@ function createIncompleteHandler(incompleteCallback, piExpress) {
  */
 function createPiPaymentRouter(options = {}) {
   const router = Router();
-  const { piExpress, verifyAccessToken, incompleteCallback, middleware = [] } = options;
-  const pi = piExpress || (process.env.PI_API_KEY ? new PiExpress() : null);
+  const { piExpress, getPiExpress, verifyAccessToken, incompleteCallback, middleware = [] } = options;
+  const routerOpts = getPiExpress ? { getPiExpress } : { piExpress: piExpress || (process.env.PI_API_KEY ? new PiExpress() : null) };
+  const hasPi = getPiExpress || routerOpts.piExpress;
 
   middleware.forEach((fn) => router.use(fn));
 
-  if (!pi) {
+  if (!hasPi) {
     router.use((_req, res) => {
       res.status(503).json({ success: false, error: "Service unavailable" });
     });
     return router;
   }
 
-  router.post("/approve", createApproveHandler(verifyAccessToken, pi));
-  router.post("/complete", createCompleteHandler(pi));
-  router.post("/cancel", createCancelHandler(pi));
+  router.post("/approve", createApproveHandler(verifyAccessToken, routerOpts));
+  router.post("/complete", createCompleteHandler(routerOpts));
+  router.post("/cancel", createCancelHandler(routerOpts));
   router.post("/error", createErrorHandler());
-  router.post("/incomplete", createIncompleteHandler(incompleteCallback, pi));
+  router.post("/incomplete", createIncompleteHandler(incompleteCallback, routerOpts));
 
   return router;
 }
