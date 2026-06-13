@@ -1,0 +1,2468 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>한글 · 섬 슬롯</title>
+  <!-- Pi App Studio: 기본 Pi SDK (Pi Browser 저수준 연결) -->
+  <script src="https://sdk.minepi.com/pi-sdk.js"></script>
+  <script>
+    (function () {
+      /** Pi Browser 외부 테스트: ?sandbox=1 또는 localhost */
+      function detectPiSandbox() {
+        var qs = new URLSearchParams(location.search);
+        if (qs.has("sandbox")) {
+          var v = qs.get("sandbox");
+          return v !== "0" && v !== "false";
+        }
+        var host = location.hostname;
+        if (host === "localhost" || host === "127.0.0.1") return true;
+        if (host.indexOf("sandbox.minepi.com") !== -1) return true;
+        try {
+          if (document.referrer.indexOf("sandbox.minepi.com") !== -1) return true;
+        } catch (_) {}
+        return false;
+      }
+
+      window.detectPiSandbox = detectPiSandbox;
+
+      function piHeadInit() {
+        if (window.__PI_INIT_DONE__) return true;
+        if (typeof Pi === "undefined" || typeof Pi.init !== "function") return false;
+        try {
+          var sandbox = detectPiSandbox();
+          var ret = Pi.init({ version: "2.0", sandbox: sandbox });
+          window.__PI_INIT_DONE__ = true;
+          window.__PI_SANDBOX_ACTIVE__ = sandbox;
+          if (ret && typeof ret.then === "function") {
+            ret.catch(function (e) {
+              console.warn("[Pi] init promise error", e);
+            });
+          }
+          return true;
+        } catch (e) {
+          console.warn("[Pi] head init error", e);
+          return false;
+        }
+      }
+
+      function waitPiHeadInit(left) {
+        if (piHeadInit()) return;
+        if (left <= 0) return;
+        setTimeout(function () {
+          waitPiHeadInit(left - 1);
+        }, 200);
+      }
+
+      if (!piHeadInit()) {
+        window.addEventListener("load", function () {
+          waitPiHeadInit(30);
+        });
+        waitPiHeadInit(30);
+      }
+    })();
+  </script>
+  <style>
+    :root {
+      --bg: #0a1628;
+      --panel: #132238;
+      --gold: #f4c430;
+      --gold-dim: #c9a227;
+      --accent: #4ecdc4;
+      --text: #e8f0ff;
+      --reel-bg: #1a2d4a;
+      --win: #7bed9f;
+
+      /* 반응형 스케일 (기본: 일반 스마트폰) */
+      --safe-t: env(safe-area-inset-top, 0px);
+      --safe-r: env(safe-area-inset-right, 0px);
+      --safe-b: env(safe-area-inset-bottom, 0px);
+      --safe-l: env(safe-area-inset-left, 0px);
+      --frame-pad: clamp(0.15rem, 1.2vw, 0.35rem);
+      --frame-max: min(420px, 100%);
+      --frame-w: min(
+        calc(100vw - var(--safe-l) - var(--safe-r) - var(--frame-pad) * 2),
+        calc((100dvh - var(--safe-t) - var(--safe-b) - var(--frame-pad) * 2) * 9 / 16),
+        var(--frame-max)
+      );
+      --symbol-h: clamp(2.65rem, 14vw, 3.5rem);
+      --reel-h: calc(var(--symbol-h) * 3);
+      --reels-width: clamp(68%, 72vw, 78%);
+      --bank-row-width: clamp(52%, 50vw, 62%);
+      --gap-xs: clamp(0.15rem, 1vw, 0.3rem);
+      --gap-sm: clamp(0.2rem, 1.4vw, 0.35rem);
+      --pad-in: clamp(0.2rem, 1.8vw, 0.35rem);
+      --btn-fs: clamp(0.68rem, 2.8vw, 0.82rem);
+      --btn-pad-y: clamp(0.42rem, 2vw, 0.55rem);
+      --btn-pad-x: clamp(0.5rem, 3vw, 0.9rem);
+      --pill-fs-title: clamp(0.72rem, 3.2vw, 1rem);
+      --pill-fs-sub: clamp(0.52rem, 2.2vw, 0.68rem);
+      --jamo-fs: clamp(1.15rem, 5.5vw, 1.45rem);
+      --special-svg: clamp(1.5rem, 7vw, 1.875rem);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    body {
+      min-height: 100dvh;
+      min-height: 100svh;
+      font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+      background: radial-gradient(ellipse at 50% 0%, #1a3a5c 0%, var(--bg) 55%);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: var(--frame-pad);
+      padding-top: max(var(--frame-pad), var(--safe-t));
+      padding-bottom: max(var(--frame-pad), var(--safe-b));
+      padding-left: max(var(--frame-pad), var(--safe-l));
+      padding-right: max(var(--frame-pad), var(--safe-r));
+      -webkit-text-size-adjust: 100%;
+      touch-action: manipulation;
+    }
+
+    .game-frame {
+      width: var(--frame-w);
+      height: auto;
+      max-height: calc(100dvh - var(--safe-t) - var(--safe-b) - var(--frame-pad) * 2);
+      max-height: calc(100svh - var(--safe-t) - var(--safe-b) - var(--frame-pad) * 2);
+      background: linear-gradient(180deg, #1a3050 0%, #0a1628 45%, #132238 100%);
+      border: 2px solid var(--gold-dim);
+      border-radius: clamp(8px, 2vw, 10px);
+      box-shadow:
+        0 0 0 1px #5c4a12,
+        0 6px 24px rgba(0, 0, 0, 0.55);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .game-header {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--gap-xs);
+      padding: var(--pad-in) var(--pad-in) calc(var(--pad-in) * 0.75);
+      flex-shrink: 0;
+    }
+
+    .status-pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: calc(var(--pad-in) * 0.9) clamp(0.5rem, 3.5vw, 0.65rem);
+      text-align: center;
+      font-weight: 700;
+      line-height: 1.35;
+      max-width: 100%;
+      border: 1.5px solid rgba(244, 196, 48, 0.5);
+      background: linear-gradient(180deg, rgba(255, 224, 130, 0.35) 0%, rgba(201, 162, 39, 0.28) 100%);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.2),
+        0 2px 8px rgba(0, 0, 0, 0.25);
+    }
+
+    .title-pill {
+      font-size: var(--pill-fs-title);
+      color: var(--gold);
+      letter-spacing: 0.05em;
+      margin: 0;
+    }
+
+    .subtitle-pill {
+      font-size: var(--pill-fs-sub);
+      color: #e8f0ff;
+      font-weight: 600;
+      border-color: rgba(78, 205, 196, 0.45);
+      background: linear-gradient(180deg, rgba(78, 205, 196, 0.22) 0%, rgba(19, 34, 56, 0.55) 100%);
+    }
+
+    .subtitle-pill strong { color: var(--gold); font-weight: 800; }
+
+    .pi-bar {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      margin-top: auto;
+      padding: var(--gap-xs) var(--pad-in) max(var(--pad-in), var(--safe-b));
+      flex-shrink: 0;
+      gap: var(--gap-xs);
+    }
+
+    .pi-login-btn {
+      width: var(--reels-width);
+      max-width: 100%;
+      margin: 0 auto;
+      font-size: var(--btn-fs);
+      font-weight: 800;
+      padding: var(--btn-pad-y) var(--btn-pad-x);
+      border-radius: 10px;
+      border: 1.5px solid #6b21a8;
+      background: linear-gradient(180deg, #c084fc 0%, #9333ea 100%);
+      color: #fff;
+      cursor: pointer;
+      box-shadow: 0 3px 0 #6b21a8, 0 2px 6px rgba(0, 0, 0, 0.25);
+      letter-spacing: 0.03em;
+      flex-shrink: 0;
+    }
+
+    .pi-login-btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .pi-user-pill {
+      font-size: var(--pill-fs-sub);
+      color: #f3e8ff;
+      border-color: rgba(192, 132, 252, 0.55);
+      background: linear-gradient(180deg, rgba(147, 51, 234, 0.35) 0%, rgba(19, 34, 56, 0.55) 100%);
+      width: var(--reels-width);
+      max-width: 100%;
+      margin: 0 auto;
+      text-align: center;
+    }
+
+    .hud {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: var(--gap-xs);
+      padding: 0 var(--pad-in) calc(var(--pad-in) * 0.75);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .stat {
+      background: linear-gradient(180deg, #ffe082 0%, #ffc107 100%);
+      border: 1.5px solid #e6a800;
+      border-radius: 8px;
+      padding: calc(var(--pad-in) * 0.9) clamp(0.3rem, 2vw, 0.45rem);
+      text-align: center;
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.45),
+        0 2px 4px rgba(0, 0, 0, 0.2);
+      min-width: 0;
+    }
+
+    .stat label {
+      display: block;
+      font-size: clamp(0.42rem, 2vw, 0.48rem);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: #5c4a12;
+      margin-bottom: 0.08rem;
+      line-height: 1.1;
+      white-space: nowrap;
+    }
+
+    .stat span {
+      font-size: clamp(0.55rem, 2.4vw, 0.62rem);
+      font-weight: 800;
+      color: #1a1408;
+      display: flex;
+      align-items: baseline;
+      justify-content: center;
+      gap: 0.15rem;
+      flex-wrap: nowrap;
+      line-height: 1.1;
+      white-space: nowrap;
+    }
+
+    .kr-unit {
+      font-size: 0.42rem;
+      font-weight: 800;
+      color: #1a1408;
+      background: rgba(255, 255, 255, 0.55);
+      padding: 0.06rem 0.22rem;
+      border-radius: 3px;
+      letter-spacing: 0.02em;
+      border: 1px solid rgba(230, 168, 0, 0.6);
+    }
+
+    .stat--coin label { color: #6b4f0a; }
+
+    .machine {
+      flex: 0 0 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: var(--gap-xs);
+      background: linear-gradient(180deg, rgba(42, 31, 10, 0.35) 0%, rgba(19, 34, 56, 0.6) 100%);
+      border-top: 1px solid rgba(244, 196, 48, 0.2);
+      padding: var(--pad-in);
+      width: 100%;
+      box-shadow: none;
+      border-radius: 0;
+      border: none;
+    }
+
+    .reels-wrap {
+      position: relative;
+      background: var(--reel-bg);
+      border-radius: 8px;
+      padding: 0.25rem;
+      overflow: hidden;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      min-height: calc(var(--reel-h) + 1.5rem);
+    }
+
+    .grid-label {
+      display: inline-block;
+      text-align: center;
+      font-size: clamp(0.62rem, 2.6vw, 0.75rem);
+      font-weight: 800;
+      color: var(--gold);
+      margin-bottom: 0.2rem;
+      letter-spacing: 0.1em;
+      padding: 0.12rem 0.55rem;
+      border-radius: 999px;
+      border: 1px solid rgba(244, 196, 48, 0.45);
+      background: rgba(244, 196, 48, 0.12);
+      flex-shrink: 0;
+    }
+
+    .payline {
+      display: none;
+    }
+
+    .reels {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: clamp(3px, 0.8vw, 4px);
+      width: var(--reels-width);
+      margin: 0 auto;
+    }
+
+    .reel {
+      background: transparent;
+      border-radius: 8px;
+      overflow: hidden;
+      height: var(--reel-h);
+      position: relative;
+      border: none;
+    }
+
+    .reel.stopping .symbol:nth-child(n) {
+      border-color: rgba(255, 230, 100, 0.75);
+      box-shadow: 0 0 8px rgba(255, 230, 100, 0.35);
+    }
+
+    .reel-strip {
+      display: flex;
+      flex-direction: column;
+      will-change: transform;
+    }
+
+    .symbol {
+      height: var(--symbol-h);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      padding: 2px;
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(244, 196, 48, 0.28);
+      border-radius: 6px;
+    }
+
+    .symbol.jamo {
+      font-size: var(--jamo-fs);
+      font-weight: 700;
+      color: #fff;
+      text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    }
+
+    .symbol.special svg {
+      width: var(--special-svg);
+      height: var(--special-svg);
+    }
+
+    .symbol.special .sym-label {
+      font-size: clamp(0.36rem, 1.8vw, 0.42rem);
+      margin-top: 2px;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .symbol.special {
+      flex-direction: column;
+    }
+
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: var(--gap-xs);
+      justify-content: center;
+      margin-top: var(--gap-xs);
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .control-row {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      gap: 0.3rem;
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+    }
+
+    .bet-row {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      gap: 0.35rem;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+    }
+
+    .bank-presets-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: var(--gap-xs);
+      width: var(--bank-row-width);
+      margin: 0 auto;
+    }
+
+    .bank-actions-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--gap-xs);
+      width: var(--bank-row-width);
+      margin: 0 auto;
+    }
+
+    button {
+      font-family: inherit;
+      cursor: pointer;
+      border: none;
+      border-radius: 10px;
+      font-weight: 700;
+      transition: transform 0.1s, filter 0.15s;
+    }
+
+    button:active:not(:disabled) { transform: scale(0.97); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    #spinBtn {
+      background: linear-gradient(180deg, #ffd54f, var(--gold-dim));
+      color: #1a1408;
+      font-size: clamp(0.82rem, 3.2vw, 0.95rem);
+      padding: var(--btn-pad-y) clamp(1rem, 5vw, 1.6rem);
+      box-shadow: 0 3px 0 #8a7018, 0 4px 14px rgba(244, 196, 48, 0.3);
+    }
+
+    #spinBtn:hover:not(:disabled) { filter: brightness(1.08); }
+
+    .spin-group {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      gap: 0.35rem;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+    }
+
+    .auto-btn {
+      background: linear-gradient(180deg, #5eead4, #2dd4bf);
+      color: #0a1628;
+      font-size: var(--btn-fs);
+      padding: var(--btn-pad-y) var(--btn-pad-x);
+      box-shadow: 0 3px 0 #0f766e;
+    }
+
+    .auto-btn.active {
+      box-shadow: 0 0 0 2px var(--accent), 0 4px 0 #0f766e;
+      animation: auto-pulse 1s ease infinite;
+    }
+
+    @keyframes auto-pulse {
+      50% { filter: brightness(1.12); }
+    }
+
+    .stop-btn {
+      background: linear-gradient(180deg, #f87171, #dc2626);
+      color: #fff;
+      font-size: var(--btn-fs);
+      padding: var(--btn-pad-y) var(--btn-pad-x);
+      box-shadow: 0 3px 0 #991b1b;
+    }
+
+    .stop-btn:hover:not(:disabled) { filter: brightness(1.1); }
+
+    .bet-btn {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      padding: var(--btn-pad-y) clamp(0.45rem, 2.5vw, 0.75rem);
+      font-size: var(--btn-fs);
+      white-space: nowrap;
+      flex: 0 0 auto;
+    }
+
+    .bet-btn.active {
+      border-color: var(--gold);
+      color: var(--gold);
+    }
+
+    .message {
+      display: block;
+      width: fit-content;
+      max-width: calc(100% - 0.3rem);
+      margin: 0.25rem auto 0;
+      min-height: 0;
+      text-align: center;
+      font-size: clamp(0.58rem, 2.5vw, 0.75rem);
+      line-height: 1.35;
+      flex-shrink: 0;
+      padding: 0.28rem 0.6rem;
+      border-radius: 999px;
+      border: 1.5px solid rgba(244, 196, 48, 0.4);
+      background: linear-gradient(180deg, rgba(26, 45, 74, 0.9) 0%, rgba(13, 26, 46, 0.95) 100%);
+      color: var(--text);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+
+    .message.win {
+      color: var(--win);
+      font-weight: 600;
+      border-color: rgba(123, 237, 159, 0.55);
+      background: linear-gradient(180deg, rgba(30, 60, 45, 0.92) 0%, rgba(13, 26, 46, 0.95) 100%);
+    }
+
+    .message.lose {
+      opacity: 0.85;
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    @keyframes pulse-win {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(123, 237, 159, 0.4); }
+      50% { box-shadow: 0 0 20px 4px rgba(123, 237, 159, 0.25); }
+    }
+
+    .machine.winning {
+      animation: pulse-win 0.8s ease 2;
+    }
+
+    .game-frame.winning {
+      animation: pulse-win 0.8s ease 2;
+    }
+
+    .sound-toggle {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid rgba(78, 205, 196, 0.4);
+      padding: 0.35rem 0.45rem;
+      font-size: 0.72rem;
+      flex-shrink: 0;
+    }
+
+    .sound-toggle.muted { opacity: 0.5; }
+
+    .bank-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      justify-content: center;
+      align-items: center;
+      margin-top: 0.25rem;
+      padding-top: 0.25rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      width: 100%;
+      flex-shrink: 0;
+    }
+
+    .bank-label {
+      font-size: clamp(0.58rem, 2.4vw, 0.68rem);
+      font-weight: 700;
+      width: auto;
+      text-align: center;
+      margin-bottom: 0;
+      color: #e8d5a3;
+      padding: 0.26rem 0.6rem;
+      border-radius: 999px;
+      border: 1.5px solid rgba(244, 196, 48, 0.45);
+      background: linear-gradient(180deg, rgba(255, 224, 130, 0.3) 0%, rgba(92, 74, 18, 0.45) 100%);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    }
+
+    .bank-preset {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      padding: 0.35rem 0.15rem;
+      font-size: clamp(0.55rem, 2.4vw, 0.68rem);
+      white-space: nowrap;
+      width: 100%;
+    }
+
+    .bank-preset.active {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .deposit-btn {
+      background: linear-gradient(180deg, #86efac, #22c55e);
+      color: #052e16;
+      padding: 0.35rem 0.2rem;
+      font-size: clamp(0.62rem, 2.6vw, 0.72rem);
+      box-shadow: 0 2px 0 #15803d;
+      width: 100%;
+      white-space: nowrap;
+    }
+
+    .withdraw-btn {
+      background: linear-gradient(180deg, #93c5fd, #3b82f6);
+      color: #0c1929;
+      padding: 0.35rem 0.2rem;
+      font-size: clamp(0.62rem, 2.6vw, 0.72rem);
+      box-shadow: 0 2px 0 #1d4ed8;
+      width: 100%;
+      white-space: nowrap;
+    }
+
+    .deposit-btn:hover:not(:disabled),
+    .withdraw-btn:hover:not(:disabled),
+    .free-btn:hover:not(:disabled) { filter: brightness(1.08); }
+
+    .free-btn {
+      background: linear-gradient(180deg, #fde047, #eab308);
+      color: #422006;
+      padding: var(--btn-pad-y) clamp(0.15rem, 1.5vw, 0.2rem);
+      font-size: var(--btn-fs);
+      font-weight: 800;
+      box-shadow: 0 2px 0 #a16207, 0 0 10px rgba(234, 179, 8, 0.35);
+      letter-spacing: 0.04em;
+      width: 100%;
+      white-space: nowrap;
+    }
+
+    /* ── 모바일: 소형 (iPhone SE, Galaxy S mini 등 ~360px) ── */
+    @media (max-width: 360px) {
+      :root {
+        --frame-max: 100%;
+        --symbol-h: clamp(2.35rem, 13vw, 2.75rem);
+        --reels-width: 76%;
+        --bank-row-width: 58%;
+        --btn-pad-x: clamp(0.4rem, 2.5vw, 0.65rem);
+      }
+    }
+
+    /* ── 모바일: 중형 (iPhone 12~15, Galaxy S 등 361~430px) ── */
+    @media (min-width: 361px) and (max-width: 430px) {
+      :root {
+        --frame-max: 400px;
+        --reels-width: 72%;
+        --bank-row-width: 55%;
+      }
+    }
+
+    /* ── 모바일: 대형 (Plus/Pro Max, Ultra 등 431px+) ── */
+    @media (min-width: 431px) {
+      :root {
+        --frame-max: 420px;
+        --symbol-h: clamp(2.85rem, 13vw, 3.5rem);
+        --reels-width: 70%;
+        --bank-row-width: 52%;
+      }
+    }
+
+    /* ── 세로 짧은 화면 (키보드·주소창·작은 높이) ── */
+    @media (max-height: 640px) {
+      :root {
+        --symbol-h: clamp(2.2rem, 11vw, 2.65rem);
+        --pad-in: clamp(0.15rem, 1.2vw, 0.25rem);
+        --btn-pad-y: clamp(0.35rem, 1.6vw, 0.48rem);
+      }
+    }
+
+    /* ── 가로 모드 ── */
+    @media (orientation: landscape) and (max-height: 520px) {
+      :root {
+        --frame-w: min(
+          calc(100vw - var(--safe-l) - var(--safe-r) - var(--frame-pad) * 2),
+          calc((100dvh - var(--safe-t) - var(--safe-b) - var(--frame-pad) * 2) * 9 / 16),
+          520px
+        );
+        --symbol-h: clamp(2rem, 10vh, 2.5rem);
+        --reels-width: 58%;
+        --bank-row-width: 48%;
+      }
+
+      body {
+        justify-content: flex-start;
+      }
+
+      .game-frame {
+        margin: var(--frame-pad) auto;
+      }
+    }
+
+    /* ── 터치 기기: 호버 효과 제거 ── */
+    @media (hover: none) and (pointer: coarse) {
+      button:hover:not(:disabled) { filter: none; }
+      #spinBtn:hover:not(:disabled) { filter: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="game-frame" id="gameFrame">
+    <header class="game-header">
+      <h1 class="status-pill title-pill">한글 · 섬 슬롯</h1>
+      <p class="status-pill subtitle-pill">두꺼비 100만 · 섬 50만 · 자모 30만 KR → <strong>π 지갑</strong> 당첨!</p>
+    </header>
+
+    <div class="hud">
+      <div class="stat stat--coin"><label>CASH</label><span id="balance"></span></div>
+      <div class="stat"><label>BET</label><span id="betDisplay"></span></div>
+      <div class="stat"><label>WIN</label><span id="lastWin"></span></div>
+    </div>
+
+    <div class="machine" id="machine">
+    <div class="reels-wrap">
+      <p class="grid-label">3 × 3</p>
+      <div class="reels" id="reels"></div>
+    </div>
+    <div class="controls">
+      <div class="control-row bet-row">
+        <button type="button" class="bet-btn" data-bet="5">5 KR</button>
+        <button type="button" class="bet-btn active" data-bet="10">10 KR</button>
+        <button type="button" class="bet-btn" data-bet="25">25 KR</button>
+        <button type="button" class="bet-btn" data-bet="50">50 KR</button>
+      </div>
+      <div class="control-row spin-group">
+        <button type="button" id="spinBtn">SPIN</button>
+        <button type="button" class="auto-btn" id="autoBtn">AUTO</button>
+        <button type="button" class="stop-btn" id="stopBtn" disabled>STOP</button>
+        <button type="button" class="sound-toggle" id="soundToggle" aria-pressed="false">🔊</button>
+      </div>
+    </div>
+    <div class="bank-row">
+      <span class="bank-label status-pill">입·출금 π 선택 <small>(1π = 3,141,590 KR)</small></span>
+      <div class="bank-presets-row">
+        <button type="button" class="bank-preset active" data-pi="0.01">0.01 π</button>
+        <button type="button" class="bank-preset" data-pi="0.1">0.1 π</button>
+        <button type="button" class="bank-preset" data-pi="1">1 π</button>
+        <button type="button" class="bank-preset" data-pi="5">5 π</button>
+      </div>
+      <div class="bank-actions-row">
+        <button type="button" class="deposit-btn" id="depositBtn">π 입금</button>
+        <button type="button" class="withdraw-btn" id="withdrawBtn">게임 종료 · π 출금</button>
+        <button type="button" class="free-btn" id="freeBtn">FREE</button>
+      </div>
+    </div>
+    <p class="message" id="message">일치 시 고정 상금 — 두꺼비 <strong>100만</strong> · 섬 <strong>50만</strong> · 자모 <strong>30만 KR</strong> → <strong>π 지갑</strong> 입금</p>
+    </div>
+
+    <div class="pi-bar" id="piPlayRow" hidden>
+      <button type="button" class="pi-login-btn" id="piLoginBtn">Pi 로그인 후 플레이</button>
+      <span class="status-pill pi-user-pill" id="piUserProfile" hidden></span>
+    </div>
+  </div>
+
+  <script>
+    const JAMO_GROUPS = [
+      ["ㄱ", "ㅋ", "ㆁ"],
+      ["ㄴ", "ㄷ", "ㅌ"],
+      ["ㅁ", "ㅂ", "ㅍ"],
+      ["ㅅ", "ㅈ", "ㅊ"],
+      ["ㆆ", "ㅎ", "ㅇ"],
+      ["ㅿ"],
+      ["ㄹ"],
+      ["ㄲ", "ㄸ", "ㅃ", "ㅆ", "ㅉ", "ㆅ"],
+      ["ㆍ"],
+      ["ㅡ"],
+      ["ㅣ"],
+      ["ㅗ", "ㅏ", "ㅜ", "ㅓ"],
+      ["ㅛ", "ㅑ", "ㅠ", "ㅕ"],
+    ];
+
+    const SPECIALS = [
+      { id: "tugeobi", label: "두꺼비", speak: "두꺼비", krPrize: 1_000_000 },
+      { id: "ieodo", label: "이어도", speak: "이어도", krPrize: 500_000 },
+      { id: "dokdo", label: "독도", speak: "독도", krPrize: 500_000 },
+      { id: "baengnyeong", label: "백령도", speak: "백령도", krPrize: 500_000 },
+      { id: "gageo", label: "가거도", speak: "가거도", krPrize: 500_000 },
+      { id: "gyeokryeol", label: "격렬비열도", speak: "격렬비열도", krPrize: 500_000 },
+    ];
+
+    /** 고정 당첨금 (KR) — π 지갑 입금 시 환산 */
+    const PRIZE_KR_TUGEOBI = 1_000_000;
+    const PRIZE_KR_ISLAND = 500_000;
+    const PRIZE_KR_JAMO = 300_000;
+
+    const JAMO_SPEAK = {
+      "ㄱ": "기역", "ㅋ": "키읔", "ㆁ": "옛이응",
+      "ㄴ": "니은", "ㄷ": "디귿", "ㅌ": "티읕",
+      "ㅁ": "미음", "ㅂ": "비읍", "ㅍ": "피읖",
+      "ㅅ": "시옷", "ㅈ": "지읒", "ㅊ": "치읓",
+      "ㆆ": "여린히읗", "ㅎ": "히읗", "ㅇ": "이응",
+      "ㅿ": "반시옷", "ㄹ": "리을",
+      "ㄲ": "쌍기역", "ㄸ": "쌍디귿", "ㅃ": "쌍비읍", "ㅆ": "쌍시옷", "ㅉ": "쌍지읒", "ㆅ": "쌍반시옷",
+      "ㆍ": "아래아", "ㅡ": "으", "ㅣ": "이",
+      "ㅗ": "오", "ㅏ": "아", "ㅜ": "우", "ㅓ": "어",
+      "ㅛ": "요", "ㅑ": "야", "ㅠ": "유", "ㅕ": "여",
+    };
+
+    const COIN = "KR";
+    const COIN_LABEL = "win KR";
+    const PI_COIN_LABEL = "π";
+    const PI_TO_KR_RATE = 3141590;
+    const INITIAL_BALANCE = 1000;
+    const FREE_BONUS = 1000;
+    const STORAGE_KEY = "hangul-slot-kr-balance";
+    /* 배포: 프론트 GitHub Pages https://maducokr.github.io/han/
+            백엔드 Render https://han-xe9x.onrender.com */
+    window.PI_AUTH_VERIFY_URL =
+      window.PI_AUTH_VERIFY_URL || "https://han-xe9x.onrender.com/api/pi/verify";
+    window.PI_BACKEND_URL = window.PI_BACKEND_URL || "https://han-xe9x.onrender.com";
+
+    let piConnected = false;
+    let piUser = null;
+    let piAccessToken = null;
+    let piService = null;
+    let piSdkReady = false;
+    let piLoginBusy = false;
+    let piPaymentBusy = false;
+    let piInitDone = false;
+    const PI_SESSION_KEY = "hangul-slot-pi-session";
+    const PI_DEPOSIT_FLAG_PREFIX = "hangul-slot-pi-deposited-";
+    /**
+     * Pi App Studio 스코프 (범위 최소화)
+     * - 로그인: username 만 (기본)
+     * - π 입금 시: payments 추가 요청
+     */
+    const PI_AUTH_SCOPES_LOGIN = ["username"];
+    const PI_AUTH_SCOPES_PAYMENT = ["username", "payments"];
+
+    function piToKr(piAmount) {
+      return Math.floor(Number(piAmount) * PI_TO_KR_RATE);
+    }
+
+    function krToPi(krAmount) {
+      return Number(krAmount) / PI_TO_KR_RATE;
+    }
+
+    /** KR → π (출금용, 7자리 내림) */
+    function krToPiAmount(krAmount) {
+      const kr = Math.floor(Number(krAmount) || 0);
+      if (kr <= 0) return 0;
+      return Math.floor((kr / PI_TO_KR_RATE) * 1e7) / 1e7;
+    }
+
+    function getPiDepositFlagKey() {
+      const id = piUser?.uid || piUser?.username;
+      return id ? `${PI_DEPOSIT_FLAG_PREFIX}${id}` : null;
+    }
+
+    /** 서버 검증된 UID 기준 사용자 식별 (Pi App Studio 권장) */
+    function getPiUserId() {
+      return piUser?.uid || piUser?.username || null;
+    }
+
+    function markPiDeposited() {
+      const key = getPiDepositFlagKey();
+      if (key) sessionStorage.setItem(key, "1");
+    }
+
+    /** π 입금 이력 여부 (Pi Browser에서 플레이 조건) */
+    function hasPiDeposited() {
+      if (!isPiBrowserEnv()) return true;
+      if (!piConnected) return false;
+      const key = getPiDepositFlagKey();
+      if (key && sessionStorage.getItem(key) === "1") return true;
+      return sessionKrDeposited > 0 || balance > 0;
+    }
+
+    /** 세션 중 유저가 지불한 베팅 KR 합계 → 제작자 지갑 정산 대상 (당첨 π는 별도 지급) */
+    function getSessionKrConsumed() {
+      return Math.max(0, sessionKrBet);
+    }
+
+    /** 베팅 KR → π 환산 후 제작자(앱) 지갑 정산 */
+    async function settleSessionToDeveloper(options) {
+      const opts = options || {};
+      const silent = !!opts.silent;
+      const reason = opts.reason || "session_stop";
+      const krConsumed = getSessionKrConsumed();
+      if (krConsumed <= 0) {
+        return { success: true, skipped: true, krConsumed: 0 };
+      }
+      if (!isPiBrowserEnv() || !piConnected || !piAccessToken) {
+        return { success: false, skipped: true, krConsumed };
+      }
+      const base = getPiBackendBase();
+      if (!base) {
+        return { success: false, skipped: true, krConsumed };
+      }
+      if (spinning) {
+        return { success: false, error: "스핀 진행 중", krConsumed };
+      }
+
+      try {
+        piPaymentBusy = true;
+        updateControls();
+        if (!silent) {
+          messageEl.innerHTML =
+            `베팅 <strong>${krConsumed.toLocaleString("ko-KR")} KR</strong> → 제작자 지갑 π 입금 처리 중…`;
+          messageEl.className = "message";
+        }
+
+        const settleRes = await fetch(`${base}/api/pi/session/settle`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            accessToken: piAccessToken,
+            krBalance: balance,
+            krBet: sessionKrBet,
+            krWon: sessionKrWon,
+            krConsumed,
+            rate: PI_TO_KR_RATE,
+            settleType: reason,
+            uid: piUser?.uid || null,
+            username: piUser?.username || null,
+          }),
+        });
+        const settleData = await settleRes.json().catch(() => ({}));
+        if (!settleRes.ok || !settleData.success) {
+          throw new Error(settleData.error || "제작자 지갑 정산에 실패했습니다.");
+        }
+
+        const housePi =
+          settleData.housePi != null ? Number(settleData.housePi) : krToPiAmount(krConsumed);
+        sessionKrBet = 0;
+        sessionKrWon = 0;
+
+        return {
+          success: true,
+          krConsumed,
+          housePi,
+          message: settleData.message || null,
+        };
+      } catch (err) {
+        console.warn("settleSessionToDeveloper:", err);
+        return { success: false, error: err?.message || "정산 오류", krConsumed };
+      } finally {
+        piPaymentBusy = false;
+        updateControls();
+      }
+    }
+
+    /** STOP·AUTO 종료 시 베팅 KR → 제작자 지갑 정산 */
+    async function onGameStopSettle() {
+      if (spinning || piPaymentBusy || getSessionKrConsumed() <= 0) return;
+      const result = await settleSessionToDeveloper({ reason: "stop" });
+      if (result.success && !result.skipped && result.krConsumed > 0) {
+        messageEl.innerHTML =
+          `정산 완료 · 베팅 <strong>${result.krConsumed.toLocaleString("ko-KR")} KR</strong> → ` +
+          `제작자 지갑 <strong>${formatPi(result.housePi)}</strong> 입금`;
+        messageEl.className = "message win";
+        Sfx.deposit();
+      } else if (!result.success && result.error && result.error !== "busy") {
+        messageEl.innerHTML = `제작자 지갑 정산 실패: ${result.error}`;
+        messageEl.className = "message lose";
+      }
+    }
+
+    function resetGameSession() {
+      sessionKrBet = 0;
+      sessionKrWon = 0;
+      sessionKrDeposited = 0;
+    }
+
+    function formatPi(piAmount) {
+      const n = Number(piAmount);
+      const text = Number.isInteger(n) ? n.toLocaleString("ko-KR") : n.toLocaleString("ko-KR", { maximumFractionDigits: 8 });
+      return `${text} ${PI_COIN_LABEL}`;
+    }
+
+    function getPiBackendBase() {
+      const custom = (window.PI_BACKEND_URL || "").trim().replace(/\/$/, "");
+      if (custom) return custom;
+      const verify = (window.PI_AUTH_VERIFY_URL || "").trim();
+      if (!verify) return "";
+      return verify.replace(/\/api\/pi\/verify\/?$/i, "");
+    }
+
+    function waitForPiSdk(maxMs) {
+      const limit = maxMs || 8000;
+      return new Promise((resolve) => {
+        if (window.Pi && typeof window.Pi.init === "function") {
+          resolve(true);
+          return;
+        }
+        const t0 = Date.now();
+        const timer = setInterval(() => {
+          if (window.Pi && typeof window.Pi.init === "function") {
+            clearInterval(timer);
+            resolve(true);
+          } else if (Date.now() - t0 >= limit) {
+            clearInterval(timer);
+            resolve(false);
+          }
+        }, 150);
+      });
+    }
+
+    function isPiBrowserEnv() {
+      if (typeof window.Pi === "undefined") return false;
+      if (typeof window.Pi.authenticate !== "function") return false;
+      if (typeof window.Pi.init !== "function") return false;
+      return true;
+    }
+
+    function savePiSession(auth) {
+      try {
+        sessionStorage.setItem(
+          PI_SESSION_KEY,
+          JSON.stringify({
+            accessToken: auth.accessToken,
+            user: auth.user,
+            paymentsScopeGranted: !!auth.paymentsScopeGranted,
+            verifiedAt: auth.verifiedAt || Date.now(),
+            savedAt: Date.now(),
+          })
+        );
+      } catch (_) {}
+    }
+
+    function loadPiSession() {
+      try {
+        const raw = sessionStorage.getItem(PI_SESSION_KEY);
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        if (!data?.accessToken) return null;
+        return data;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function clearPiSession() {
+      try {
+        sessionStorage.removeItem(PI_SESSION_KEY);
+      } catch (_) {}
+    }
+
+    const PI_CONNECT_TIMEOUT_MS = 45000;
+
+    /** sandbox: 로컬·sandbox.minepi.com·?sandbox=1 (github.io 프로덕션은 false) */
+    function isPiSandboxMode() {
+      if (typeof window.__PI_SANDBOX_ACTIVE__ === "boolean") {
+        return window.__PI_SANDBOX_ACTIVE__;
+      }
+      if (typeof window.detectPiSandbox === "function") {
+        return window.detectPiSandbox();
+      }
+      const qs = new URLSearchParams(location.search);
+      if (qs.has("sandbox")) {
+        const v = qs.get("sandbox");
+        return v !== "0" && v !== "false";
+      }
+      const host = location.hostname;
+      if (host === "localhost" || host === "127.0.0.1") return true;
+      if (host.indexOf("sandbox.minepi.com") !== -1) return true;
+      try {
+        if (document.referrer.indexOf("sandbox.minepi.com") !== -1) return true;
+      } catch (_) {}
+      return false;
+    }
+
+    function ensurePiInitialized() {
+      if (!isPiBrowserEnv()) {
+        return Promise.reject(new Error("Pi Browser에서 앱을 열어 주세요."));
+      }
+      if (window.__PI_INIT_DONE__ || piInitDone) {
+        piInitDone = true;
+        return Promise.resolve();
+      }
+      return Promise.reject(new Error("Pi SDK 초기화 대기 중입니다. 잠시 후 다시 시도해 주세요."));
+    }
+
+    const PI_INCOMPLETE_PAYMENT_KEY = "pi-incomplete-payment";
+
+    function formatPiAuthError(err) {
+      const msg = err?.message || String(err || "");
+      if (/cancel/i.test(msg)) return "로그인이 취소되었습니다.";
+      if (/timeout/i.test(msg)) return "연결 시간이 초과되었습니다.";
+      if (/not registered|domain|origin|host/i.test(msg)) {
+        return "Developer Portal에 앱 URL이 등록되어 있는지 확인해 주세요.";
+      }
+      return msg || "Pi 인증에 실패했습니다.";
+    }
+
+    let SYMBOL_H = 56;
+    const REEL_COUNT = 3;
+    const VISIBLE = 3;
+    const SPIN_MS = 1800;
+    const PRONOUNCE_TIMES = 5;
+
+    function formatKr(amount) {
+      const n = Math.floor(Number(amount) || 0);
+      return `${n.toLocaleString("ko-KR")} <span class="kr-unit">${COIN_LABEL}</span>`;
+    }
+
+    function getBalanceStorageKey() {
+      const id = getPiUserId();
+      return id ? `${STORAGE_KEY}-${id}` : STORAGE_KEY;
+    }
+
+    function loadBalance() {
+      try {
+        const saved = localStorage.getItem(getBalanceStorageKey());
+        if (saved !== null) {
+          const n = parseInt(saved, 10);
+          if (!Number.isNaN(n) && n >= 0) return n;
+        }
+      } catch (_) {}
+      return isPiBrowserEnv() ? 0 : INITIAL_BALANCE;
+    }
+
+    function saveBalance() {
+      try {
+        localStorage.setItem(getBalanceStorageKey(), String(balance));
+      } catch (_) {}
+    }
+
+    /**
+     * PiClient — pi-sdk-js PiSdkBase와 동등 (HTML 단일 파일용)
+     * window.Pi.init / authenticate / createPayment 래핑
+     */
+    class PiClient {
+      async connect() {
+        await ensurePiInitialized();
+        return true;
+      }
+
+      async authenticate(scopes, onIncompletePaymentFound) {
+        await this.connect();
+        return window.Pi.authenticate(scopes, onIncompletePaymentFound);
+      }
+
+      createPayment(paymentData, callbacks) {
+        return window.Pi.createPayment(paymentData, callbacks);
+      }
+    }
+
+    /**
+     * PiService — Pi App Studio 권장 패턴
+     * authenticate → accessToken 백엔드 검증(/me) → 검증된 uid 사용
+     */
+    class PiService {
+      constructor() {
+        this.client = new PiClient();
+        this.user = null;
+        this.accessToken = null;
+        this.paymentsScopeGranted = false;
+      }
+
+      /** Pi SDK 필수 콜백 — 미완료 결제 저장 후 로그인 완료 시 백엔드 처리 */
+      onIncompletePaymentFound(payment) {
+        console.warn("[Pi] incomplete payment:", payment?.identifier);
+        try {
+          if (payment?.identifier) {
+            sessionStorage.setItem(PI_INCOMPLETE_PAYMENT_KEY, payment.identifier);
+          }
+        } catch (_) {}
+      }
+
+      /** 미완료 결제 백엔드 approve 시도 */
+      async resolveIncompletePayment(accessToken) {
+        const paymentId = sessionStorage.getItem(PI_INCOMPLETE_PAYMENT_KEY);
+        const base = getPiBackendBase();
+        if (!paymentId || !accessToken || !base) return;
+        try {
+          const res = await fetch(`${base}/api/pi/payments/approve`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ paymentId, accessToken }),
+          });
+          if (res.ok) sessionStorage.removeItem(PI_INCOMPLETE_PAYMENT_KEY);
+        } catch (err) {
+          console.warn("[Pi] incomplete payment resolve:", err);
+        }
+      }
+
+      /**
+       * @param {string[]} scopes — 기본 ['username']
+       */
+      async login(scopes = PI_AUTH_SCOPES_LOGIN) {
+        try {
+          const auth = await this.client.authenticate(
+            scopes,
+            (payment) => this.onIncompletePaymentFound(payment)
+          );
+          if (!auth?.accessToken) {
+            return { success: false, error: "accessToken을 받지 못했습니다." };
+          }
+
+          const verifiedUser = await verifyPiAccessToken(auth.accessToken);
+          await this.resolveIncompletePayment(auth.accessToken);
+
+          this.accessToken = auth.accessToken;
+          this.user = verifiedUser;
+          this.paymentsScopeGranted = scopes.includes("payments");
+
+          piAccessToken = auth.accessToken;
+          piUser = verifiedUser;
+          savePiSession({
+            accessToken: auth.accessToken,
+            user: verifiedUser,
+            paymentsScopeGranted: this.paymentsScopeGranted,
+            verifiedAt: Date.now(),
+          });
+
+          console.info("[Pi] authenticated", verifiedUser.username || verifiedUser.uid);
+          return {
+            success: true,
+            accessToken: auth.accessToken,
+            user: verifiedUser,
+          };
+        } catch (error) {
+          console.error("[Pi] Authentication Error:", error);
+          return { success: false, error: error?.message || "인증에 실패했습니다." };
+        }
+      }
+
+      /** π 입금 전 payments 스코프 확보 (범위 최소화) */
+      async ensurePaymentsAuth() {
+        if (this.paymentsScopeGranted && this.accessToken && this.user) {
+          return { success: true, accessToken: this.accessToken, user: this.user };
+        }
+        return this.login(PI_AUTH_SCOPES_PAYMENT);
+      }
+    }
+
+    /**
+     * accessToken 서버 검증 — Pi Platform API /me (백엔드 경유)
+     * 검증된 uid·username만 신뢰 (프론트 auth.user는 표시용)
+     */
+    async function verifyPiAccessToken(accessToken) {
+      const url = window.PI_AUTH_VERIFY_URL;
+      if (!url || !accessToken) {
+        throw new Error("서버 인증 URL 또는 accessToken이 없습니다.");
+      }
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ accessToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success || !data.user?.uid) {
+        throw new Error(data.error || "accessToken 서버 검증에 실패했습니다.");
+      }
+      return {
+        uid: data.user.uid,
+        username: data.user.username || null,
+      };
+    }
+
+    function requiresPiAuth() {
+      return isPiBrowserEnv();
+    }
+
+    /** Pi Browser: π 입금·로그인 후에만 플레이 / 일반 브라우저: 데모 허용 */
+    function isPlayAllowed() {
+      if (!isPiBrowserEnv()) return true;
+      if (!piConnected) return false;
+      if (!hasPiDeposited()) return false;
+      return true;
+    }
+
+    function getPlayBlockMessage() {
+      if (!isPiBrowserEnv()) return "";
+      if (!piConnected) return "Pi Browser에서 <strong>Pi 로그인</strong> 후 플레이할 수 있습니다.";
+      if (!hasPiDeposited()) return "<strong>π 입금</strong> 후 게임을 시작할 수 있습니다. (1π = 3,141,590 KR)";
+      if (balance < bet) return `${COIN} 잔액이 부족합니다. π 입금 또는 베팅 금액을 낮춰 주세요.`;
+      return "";
+    }
+
+    const piPlayRow = document.getElementById("piPlayRow");
+    const piLoginBtn = document.getElementById("piLoginBtn");
+    const piUserProfile = document.getElementById("piUserProfile");
+
+    function updatePiUI(connected) {
+      const isConn = connected ?? piConnected;
+      const inPi = requiresPiAuth();
+      if (piPlayRow) {
+        piPlayRow.hidden = !inPi;
+      }
+      if (piLoginBtn) {
+        piLoginBtn.hidden = isConn;
+        piLoginBtn.disabled = isConn || piLoginBusy;
+        if (!isConn && piSdkReady && !piLoginBusy) {
+          piLoginBtn.textContent = "Pi 로그인 (게스트 → 사용자)";
+        } else if (!isConn && !piSdkReady && !piLoginBusy) {
+          piLoginBtn.textContent = "준비 중…";
+        }
+      }
+      if (piUserProfile) {
+        piUserProfile.hidden = !isConn;
+        if (isConn && piUser) {
+          const label = piUser.username ? `@${piUser.username}` : "Pi 사용자";
+          piUserProfile.textContent = label;
+          piUserProfile.title = piUser.uid
+            ? `UID: ${piUser.uid}${piUser.username ? ` · @${piUser.username}` : ""}`
+            : label;
+        }
+      }
+    }
+
+    function onPiAuthenticated() {
+      balance = loadBalance();
+      updatePiUI(true);
+      updateHud();
+      updateControls();
+      const name = piUser?.username ? `@${piUser.username}` : "Pi 사용자";
+      const uidHint = piUser?.uid ? `<br><small>UID: ${piUser.uid}</small>` : "";
+      messageEl.innerHTML = `Pi 인증 완료 · <strong>${name}</strong>님 환영합니다!${uidHint}`;
+      messageEl.className = "message";
+    }
+
+    async function handlePiLogin(silent) {
+      if (piLoginBusy) return;
+      if (!piService) {
+        if (!silent) {
+          messageEl.textContent = "Pi SDK를 불러오는 중입니다. 잠시 후 다시 시도해 주세요.";
+          messageEl.className = "message";
+        }
+        return;
+      }
+      if (!window.Pi || !isPiBrowserEnv()) {
+        if (!silent) {
+          messageEl.innerHTML =
+            "Pi Browser에서 앱을 열어 <strong>Pi 로그인</strong>을 진행해 주세요.";
+          messageEl.className = "message";
+        }
+        updatePiUI(false);
+        return;
+      }
+
+      if (!window.__PI_INIT_DONE__) {
+        if (!silent) {
+          messageEl.textContent = "Pi SDK 준비 중… 잠시 후 다시 눌러 주세요.";
+          messageEl.className = "message";
+        }
+        await waitForPiSdk(5000);
+        if (!window.__PI_INIT_DONE__) {
+          if (!silent) {
+            messageEl.textContent = "Pi SDK 초기화에 실패했습니다. 앱을 새로고침해 주세요.";
+            messageEl.className = "message lose";
+          }
+          return;
+        }
+      }
+
+      piLoginBusy = true;
+      if (!silent && piLoginBtn) {
+        piLoginBtn.disabled = true;
+        piLoginBtn.textContent = "연결 중…";
+      }
+
+      try {
+        const result = await Promise.race([
+          piService.login(),
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("연결 시간이 초과되었습니다. 버튼을 다시 눌러 주세요.")),
+              PI_CONNECT_TIMEOUT_MS
+            )
+          ),
+        ]);
+        if (result.success) {
+          piConnected = true;
+          piUser = result.user;
+          piAccessToken = result.accessToken;
+          onPiAuthenticated();
+        } else {
+          piConnected = false;
+          piUser = null;
+          piAccessToken = null;
+          updatePiUI(false);
+          if (!silent) {
+            const mode = isPiSandboxMode() ? "sandbox" : "production";
+            messageEl.textContent =
+              "로그인 실패: " + (result.error || "알 수 없는 오류") + ` (${mode})`;
+            messageEl.className = "message lose";
+          }
+        }
+      } catch (error) {
+        piConnected = false;
+        piUser = null;
+        piAccessToken = null;
+        clearPiSession();
+        updatePiUI(false);
+        if (!silent) {
+          const mode = isPiSandboxMode() ? "sandbox" : "production";
+          const msg = formatPiAuthError(error);
+          messageEl.textContent = `${msg} (${mode} 모드)`;
+          messageEl.className = "message lose";
+        }
+        console.warn("Pi login:", error);
+      } finally {
+        piLoginBusy = false;
+        if (piLoginBtn && !piConnected) {
+          piLoginBtn.disabled = false;
+          piLoginBtn.textContent = "Pi 로그인 (게스트 → 사용자)";
+        }
+      }
+    }
+
+    async function initPiSdk() {
+      if (!isPiBrowserEnv()) {
+        piSdkReady = true;
+        if (piPlayRow) piPlayRow.hidden = true;
+        return;
+      }
+      piService = new PiService();
+      window.piService = piService;
+      await waitForPiSdk(10000);
+      if (!window.__PI_INIT_DONE__) {
+        try {
+          const sandbox = isPiSandboxMode();
+          await Promise.resolve(window.Pi.init({ version: "2.0", sandbox }));
+          window.__PI_INIT_DONE__ = true;
+          window.__PI_SANDBOX_ACTIVE__ = sandbox;
+          piInitDone = true;
+        } catch (err) {
+          console.warn("Pi init retry failed:", err);
+        }
+      } else {
+        piInitDone = true;
+      }
+      piSdkReady = true;
+      const saved = loadPiSession();
+      if (saved?.accessToken && window.__PI_INIT_DONE__) {
+        try {
+          const verifiedUser = await verifyPiAccessToken(saved.accessToken);
+          piConnected = true;
+          piUser = verifiedUser;
+          piAccessToken = saved.accessToken;
+          piService.user = verifiedUser;
+          piService.accessToken = saved.accessToken;
+          piService.paymentsScopeGranted = !!saved.paymentsScopeGranted;
+          await piService.resolveIncompletePayment(saved.accessToken);
+          savePiSession({
+            accessToken: saved.accessToken,
+            user: verifiedUser,
+            paymentsScopeGranted: piService.paymentsScopeGranted,
+            verifiedAt: Date.now(),
+          });
+          onPiAuthenticated();
+        } catch (err) {
+          console.warn("Pi session re-verify failed:", err);
+          clearPiSession();
+          updatePiUI(false);
+        }
+      } else {
+        updatePiUI(false);
+      }
+    }
+
+    const Sfx = (() => {
+      let ctx = null;
+      let muted = false;
+      let spinTimer = null;
+
+      function ac() {
+        if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+        return ctx;
+      }
+
+      function unlock() {
+        const c = ac();
+        if (c.state === "suspended") c.resume();
+      }
+
+      function tone(freq, dur, type = "square", vol = 0.12, when = 0) {
+        if (muted) return;
+        const c = ac();
+        const t = c.currentTime + when;
+        const o = c.createOscillator();
+        const g = c.createGain();
+        o.type = type;
+        o.frequency.setValueAtTime(freq, t);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+        o.connect(g);
+        g.connect(c.destination);
+        o.start(t);
+        o.stop(t + dur);
+      }
+
+      function noise(dur, vol = 0.08) {
+        if (muted) return;
+        const c = ac();
+        const buf = c.createBuffer(1, c.sampleRate * dur, c.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+        const src = c.createBufferSource();
+        src.buffer = buf;
+        const g = c.createGain();
+        g.gain.value = vol;
+        const f = c.createBiquadFilter();
+        f.type = "bandpass";
+        f.frequency.value = 800;
+        src.connect(f);
+        f.connect(g);
+        g.connect(c.destination);
+        src.start();
+      }
+
+      return {
+        unlock,
+        setMuted(m) { muted = m; if (m) this.stopSpinLoop(); },
+        isMuted() { return muted; },
+
+        click() {
+          tone(520, 0.06, "sine", 0.1);
+          tone(780, 0.05, "sine", 0.08, 0.04);
+        },
+
+        spinStart() {
+          unlock();
+          tone(220, 0.15, "sawtooth", 0.06);
+          tone(330, 0.12, "square", 0.05, 0.05);
+        },
+
+        spinTick() {
+          tone(180 + Math.random() * 80, 0.04, "square", 0.06);
+        },
+
+        startSpinLoop() {
+          this.stopSpinLoop();
+          let n = 0;
+          spinTimer = setInterval(() => {
+            if (muted) return;
+            this.spinTick();
+            n++;
+            if (n % 4 === 0) noise(0.03, 0.04);
+          }, 90);
+        },
+
+        stopSpinLoop() {
+          if (spinTimer) clearInterval(spinTimer);
+          spinTimer = null;
+        },
+
+        reelStop(i) {
+          tone(120 + i * 40, 0.1, "triangle", 0.14);
+          noise(0.06, 0.1);
+          tone(90, 0.08, "sine", 0.1, 0.02);
+        },
+
+        winSmall() {
+          [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.12, "square", 0.1, i * 0.1));
+        },
+
+        winBig() {
+          const notes = [392, 494, 587, 659, 784, 988, 1175];
+          notes.forEach((f, i) => tone(f, 0.14, "square", 0.11, i * 0.09));
+          setTimeout(() => {
+            if (muted) return;
+            [784, 988, 1175, 1568].forEach((f, i) => tone(f, 0.18, "sawtooth", 0.09, i * 0.12));
+          }, 200);
+          setTimeout(() => noise(0.15, 0.12), 100);
+        },
+
+        lose() {
+          tone(200, 0.2, "sawtooth", 0.08);
+          tone(150, 0.25, "triangle", 0.06, 0.15);
+        },
+
+        deposit() {
+          [659, 784, 988, 1175].forEach((f, i) => tone(f, 0.1, "sine", 0.1, i * 0.07));
+        },
+
+        withdraw() {
+          [784, 659, 523, 392].forEach((f, i) => tone(f, 0.1, "triangle", 0.09, i * 0.07));
+        },
+      };
+    })();
+
+    function getPronunciation(sym) {
+      if (sym.type === "jamo") return JAMO_SPEAK[sym.char] || sym.char;
+      return sym.speak || sym.label;
+    }
+
+    function delay(ms) {
+      return new Promise((r) => setTimeout(r, ms));
+    }
+
+    function speakOnce(text) {
+      return new Promise((resolve) => {
+        if (!window.speechSynthesis) {
+          resolve();
+          return;
+        }
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = "ko-KR";
+        u.rate = 1.05;
+        u.pitch = symPitch(text);
+        const voices = speechSynthesis.getVoices();
+        const ko = voices.find((v) => v.lang.startsWith("ko"));
+        if (ko) u.voice = ko;
+        u.onend = () => resolve();
+        u.onerror = () => resolve();
+        speechSynthesis.speak(u);
+      });
+    }
+
+    function symPitch(text) {
+      if (text.length > 4) return 1;
+      if (text.includes("쌍") || text.includes("독도")) return 1.15;
+      return 1.05;
+    }
+
+    async function pronounceNTimes(sym, times) {
+      const text = getPronunciation(sym);
+      const count = Math.max(1, times || PRONOUNCE_TIMES);
+      speechSynthesis?.cancel();
+      for (let i = 0; i < count; i++) {
+        if (stopRequested) break;
+        await speakOnce(text);
+        if (stopRequested) break;
+        await delay(180);
+      }
+    }
+
+    async function pronounceFiveTimes(sym) {
+      return pronounceNTimes(sym, PRONOUNCE_TIMES);
+    }
+
+    if (window.speechSynthesis) {
+      speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
+      speechSynthesis.getVoices();
+    }
+
+    const svgIcons = {
+      tugeobi: `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <ellipse cx="32" cy="38" rx="22" ry="20" fill="#8B6914"/>
+        <ellipse cx="32" cy="36" rx="20" ry="18" fill="#C4A035"/>
+        <circle cx="24" cy="30" r="4" fill="#1a1a1a"/><circle cx="40" cy="30" r="4" fill="#1a1a1a"/>
+        <circle cx="25" cy="29" r="1.5" fill="#fff"/><circle cx="41" cy="29" r="1.5" fill="#fff"/>
+        <path d="M26 40 Q32 46 38 40" stroke="#5c3d1e" stroke-width="2" fill="none"/>
+        <ellipse cx="18" cy="42" rx="5" ry="3" fill="#ffb6c1" opacity=".6"/>
+        <ellipse cx="46" cy="42" rx="5" ry="3" fill="#ffb6c1" opacity=".6"/>
+        <path d="M20 18 Q32 8 44 18 L42 24 Q32 16 22 24 Z" fill="#6B8E23"/>
+      </svg>`,
+      ieodo: `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <rect width="64" height="64" fill="#1e4d6e"/>
+        <path d="M8 40 Q32 28 56 40 L56 52 Q32 44 8 52 Z" fill="#4a7c59"/>
+        <ellipse cx="32" cy="48" rx="8" ry="4" fill="#8B7355"/>
+        <path d="M28 44 L32 36 L36 44" fill="#6b5344"/>
+        <text x="32" y="22" text-anchor="middle" fill="#a8d4f0" font-size="7" font-family="sans-serif">이어도</text>
+      </svg>`,
+      dokdo: `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <rect width="64" height="48" fill="#5ba3d9"/>
+        <rect y="48" width="64" height="16" fill="#c2a366"/>
+        <path d="M22 48 L26 20 L30 48" fill="#4a6741"/>
+        <path d="M34 48 L38 14 L42 48" fill="#3d5636"/>
+        <circle cx="48" cy="12" r="6" fill="#ffeb3b"/>
+        <text x="32" y="58" text-anchor="middle" fill="#333" font-size="8" font-weight="bold" font-family="sans-serif">독도</text>
+      </svg>`,
+      baengnyeong: `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <rect width="64" height="40" fill="#87CEEB"/>
+        <ellipse cx="32" cy="44" rx="24" ry="14" fill="#90c695"/>
+        <path d="M16 44 Q32 30 48 44" fill="#6b9b6e"/>
+        <rect x="28" y="32" width="8" height="12" fill="#8B4513" rx="1"/>
+        <text x="32" y="58" text-anchor="middle" fill="#fff" font-size="6" font-family="sans-serif">백령도</text>
+      </svg>`,
+      gageo: `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <rect width="64" height="36" fill="#6eb5e8"/>
+        <path d="M12 50 Q32 32 52 50 L52 58 Q32 52 12 58 Z" fill="#7cb87f"/>
+        <circle cx="40" cy="38" r="3" fill="#fff"/>
+        <text x="32" y="56" text-anchor="middle" fill="#1a3a1a" font-size="7" font-family="sans-serif">가거도</text>
+      </svg>`,
+      gyeokryeol: `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <rect width="64" height="38" fill="#4a90c2"/>
+        <path d="M8 42 L20 28 L32 40 L44 24 L56 38 L56 52 L8 52 Z" fill="#5a8f5a"/>
+        <path d="M24 42 L28 34 L32 42" fill="#3d6b3d"/>
+        <text x="32" y="58" text-anchor="middle" fill="#e8f4ff" font-size="5" font-family="sans-serif">격렬비영도</text>
+      </svg>`,
+    };
+
+    function buildSymbolPool() {
+      const pool = [];
+      JAMO_GROUPS.forEach((group, gi) => {
+        group.forEach((ch) => {
+          pool.push({
+            type: "jamo",
+            char: ch,
+            group: gi,
+            speak: JAMO_SPEAK[ch] || ch,
+            weight: group.length <= 2 ? 2 : 4,
+          });
+        });
+      });
+      SPECIALS.forEach((s) => {
+        pool.push({ type: "special", ...s, weight: 1 });
+      });
+      return pool;
+    }
+
+    const SYMBOL_POOL = buildSymbolPool();
+
+    function weightedPick() {
+      const total = SYMBOL_POOL.reduce((a, s) => a + s.weight, 0);
+      let r = Math.random() * total;
+      for (const s of SYMBOL_POOL) {
+        r -= s.weight;
+        if (r <= 0) return s;
+      }
+      return SYMBOL_POOL[SYMBOL_POOL.length - 1];
+    }
+
+    function symbolKey(sym) {
+      return sym.type === "jamo" ? `j:${sym.char}` : `s:${sym.id}`;
+    }
+
+    function renderSymbolEl(sym) {
+      const div = document.createElement("div");
+      div.className = "symbol " + sym.type;
+      div.dataset.key = symbolKey(sym);
+      if (sym.type === "jamo") {
+        div.textContent = sym.char;
+        div.dataset.group = String(sym.group);
+        div.dataset.char = sym.char;
+      } else {
+        div.innerHTML = svgIcons[sym.id] + `<span class="sym-label">${sym.label}</span>`;
+        div.dataset.special = sym.id;
+        div.dataset.krPrize = String(sym.krPrize || PRIZE_KR_ISLAND);
+      }
+      return div;
+    }
+
+    function randomStrip(len) {
+      const strip = [];
+      for (let i = 0; i < len; i++) strip.push(weightedPick());
+      return strip;
+    }
+
+    let balance = loadBalance();
+    let bet = 10;
+    let bankPiAmount = 0.01;
+    let sessionKrBet = 0;
+    let sessionKrWon = 0;
+    let sessionKrDeposited = 0;
+    let spinning = false;
+    let autoMode = false;
+    let stopRequested = false;
+    let reelStrips = [];
+    let reelOffsets = [];
+
+    const AUTO_GAP_MS = 700;
+    const balanceEl = document.getElementById("balance");
+    const betDisplayEl = document.getElementById("betDisplay");
+    const lastWinEl = document.getElementById("lastWin");
+    const messageEl = document.getElementById("message");
+    const machineEl = document.getElementById("machine");
+    const gameFrameEl = document.getElementById("gameFrame");
+    const reelsEl = document.getElementById("reels");
+    const spinBtn = document.getElementById("spinBtn");
+    const autoBtn = document.getElementById("autoBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const depositBtn = document.getElementById("depositBtn");
+    const withdrawBtn = document.getElementById("withdrawBtn");
+    const freeBtn = document.getElementById("freeBtn");
+
+    function updateControls() {
+      const locked = !isPlayAllowed();
+      spinBtn.disabled = locked || spinning || autoMode;
+      autoBtn.disabled = locked || spinning || autoMode || balance < bet;
+      autoBtn.classList.toggle("active", autoMode);
+      stopBtn.disabled = !autoMode && !spinning;
+      const canPiPay = piConnected && !!getPiBackendBase() && isPiBrowserEnv();
+      depositBtn.disabled = locked || spinning || autoMode || piPaymentBusy || !canPiPay;
+      withdrawBtn.disabled =
+        locked || spinning || autoMode || piPaymentBusy || !canPiPay || balance <= 0;
+      if (freeBtn) freeBtn.hidden = isPiBrowserEnv();
+      freeBtn.disabled = locked || spinning || autoMode || isPiBrowserEnv();
+      document.querySelectorAll(".bet-btn").forEach((b) => {
+        b.disabled = spinning || autoMode;
+      });
+      document.querySelectorAll(".bank-preset").forEach((b) => {
+        b.disabled = spinning || autoMode;
+      });
+    }
+
+    async function depositPi() {
+      if (spinning || autoMode || piPaymentBusy) return;
+      if (!piConnected || !piAccessToken) {
+        messageEl.innerHTML = "π 입금은 <strong>Pi 로그인</strong> 후 이용할 수 있습니다.";
+        messageEl.className = "message lose";
+        return;
+      }
+      if (!isPiBrowserEnv() || typeof window.Pi?.createPayment !== "function") {
+        messageEl.innerHTML = "π 입금은 <strong>Pi Browser</strong>에서만 가능합니다.";
+        messageEl.className = "message lose";
+        return;
+      }
+      const base = getPiBackendBase();
+      if (!base) {
+        messageEl.innerHTML = "백엔드 URL이 설정되지 않았습니다. <code>PI_BACKEND_URL</code> 또는 <code>PI_AUTH_VERIFY_URL</code>을 설정해 주세요.";
+        messageEl.className = "message lose";
+        return;
+      }
+
+      const piAmount = bankPiAmount;
+      const krCredit = piToKr(piAmount);
+      Sfx.unlock();
+      Sfx.click();
+      piPaymentBusy = true;
+      updateControls();
+      messageEl.innerHTML = `π 입금 중… <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR</strong>`;
+      messageEl.className = "message";
+
+      try {
+        await ensurePiInitialized();
+        const payAuth = await piService.ensurePaymentsAuth();
+        if (!payAuth.success) {
+          messageEl.textContent = payAuth.error || "π 입금을 위해 payments 권한이 필요합니다.";
+          messageEl.className = "message lose";
+          return;
+        }
+        piAccessToken = payAuth.accessToken || piAccessToken;
+        if (payAuth.user) piUser = payAuth.user;
+
+        await new Promise((resolve, reject) => {
+          const callbacks = {
+            onReadyForServerApproval: async (paymentId) => {
+              const res = await fetch(`${base}/api/pi/payments/approve`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Accept: "application/json" },
+                body: JSON.stringify({ paymentId, accessToken: piAccessToken }),
+              });
+              if (!res.ok) throw new Error("결제 승인에 실패했습니다.");
+            },
+            onReadyForServerCompletion: async (paymentId, txid) => {
+              const res = await fetch(`${base}/api/pi/payments/complete`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Accept: "application/json" },
+                body: JSON.stringify({ paymentId, txid, accessToken: piAccessToken }),
+              });
+              if (!res.ok) throw new Error("결제 완료 처리에 실패했습니다.");
+              resolve();
+            },
+            onCancel: () => reject(new Error("π 입금이 취소되었습니다.")),
+            onError: (error) => reject(error instanceof Error ? error : new Error("π 입금 오류")),
+          };
+
+          const ret = piService.client.createPayment(
+            {
+              amount: piAmount,
+              memo: `KRSLOT KR ${krCredit.toLocaleString("ko-KR")} 충전`,
+              metadata: {
+                type: "deposit",
+                piAmount,
+                krAmount: krCredit,
+                rate: PI_TO_KR_RATE,
+                uid: piUser?.uid || null,
+                username: piUser?.username || null,
+              },
+            },
+            callbacks
+          );
+          if (ret && typeof ret.then === "function") {
+            ret.catch(reject);
+          }
+        });
+
+        balance += krCredit;
+        sessionKrDeposited += krCredit;
+        markPiDeposited();
+        updateHud();
+        updateControls();
+        Sfx.deposit();
+        messageEl.innerHTML =
+          `π 입금 완료 · <strong>+${formatPi(piAmount)}</strong> → <strong>+${krCredit.toLocaleString("ko-KR")} KR</strong> ` +
+          `(보유 ${balance.toLocaleString("ko-KR")} KR) — 이제 게임을 시작할 수 있습니다.`;
+        messageEl.className = "message win";
+      } catch (err) {
+        messageEl.textContent = err?.message || "π 입금에 실패했습니다.";
+        messageEl.className = "message lose";
+        Sfx.lose();
+        console.warn("Pi deposit:", err);
+      } finally {
+        piPaymentBusy = false;
+        updateControls();
+      }
+    }
+
+    /**
+     * 당첨금 KR → π 변환 후 유저 Pi 지갑 A2U 입금
+     */
+    async function payWinPi(krAmount, winMeta) {
+      const base = getPiBackendBase();
+      if (!base || !piAccessToken) {
+        return { success: false, skipped: true };
+      }
+      const piAmount = krToPiAmount(krAmount);
+      if (piAmount <= 0) {
+        return { success: false, error: "π 환산 금액이 없습니다." };
+      }
+      try {
+        const res = await fetch(`${base}/api/pi/payments/payout`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            accessToken: piAccessToken,
+            amount: piAmount,
+            memo: `KRSLOT 당첨 ${Math.floor(krAmount).toLocaleString("ko-KR")} KR`,
+            metadata: {
+              type: "win_payout",
+              krAmount: Math.floor(krAmount),
+              piAmount,
+              rate: PI_TO_KR_RATE,
+              uid: piUser?.uid || null,
+              username: piUser?.username || null,
+              ...winMeta,
+            },
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || "π 당첨 지급에 실패했습니다.");
+        }
+        return { success: true, piAmount, paymentId: data.paymentId, txid: data.txid };
+      } catch (err) {
+        console.warn("payWinPi:", err);
+        return { success: false, error: err?.message || "π 당첨 지급 오류" };
+      }
+    }
+
+    /**
+     * 게임 종료 · 전액 π 출금
+     * 1) 세션 소모 KR → 제작자 지갑 정산 (서버 settle)
+     * 2) 잔액+당첨금 합산 KR → 유저 지갑 π 지급 (payout)
+     */
+    async function cashOutGamePi() {
+      if (spinning || autoMode || piPaymentBusy) return;
+      if (autoMode) stopAuto(null);
+      if (!piConnected || !piAccessToken) {
+        messageEl.innerHTML = "π 출금은 <strong>Pi 로그인</strong> 후 이용할 수 있습니다.";
+        messageEl.className = "message lose";
+        return;
+      }
+      const base = getPiBackendBase();
+      if (!base) {
+        messageEl.innerHTML = "백엔드 URL이 설정되지 않았습니다.";
+        messageEl.className = "message lose";
+        return;
+      }
+
+      const krBalance = balance;
+      const krConsumed = getSessionKrConsumed();
+      const piAmount = krToPiAmount(krBalance);
+      if (krBalance <= 0 || piAmount <= 0) {
+        messageEl.innerHTML = "출금할 KR 잔액이 없습니다.";
+        messageEl.className = "message lose";
+        return;
+      }
+
+      Sfx.unlock();
+      Sfx.click();
+      piPaymentBusy = true;
+      updateControls();
+      messageEl.innerHTML =
+        `게임 종료 처리 중… 잔액 <strong>${krBalance.toLocaleString("ko-KR")} KR</strong> → <strong>${formatPi(piAmount)}</strong>`;
+      messageEl.className = "message";
+
+      try {
+        const krConsumed = getSessionKrConsumed();
+        if (krConsumed > 0) {
+          const settleRes = await fetch(`${base}/api/pi/session/settle`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({
+              accessToken: piAccessToken,
+              krBalance,
+              krBet: sessionKrBet,
+              krWon: sessionKrWon,
+              krConsumed,
+              rate: PI_TO_KR_RATE,
+              settleType: "cashout",
+              uid: piUser?.uid || null,
+              username: piUser?.username || null,
+            }),
+          });
+          const settleData = await settleRes.json().catch(() => ({}));
+          if (!settleRes.ok || !settleData.success) {
+            throw new Error(settleData.error || "게임 정산(제작자 지갑)에 실패했습니다.");
+          }
+          sessionKrBet = 0;
+          sessionKrWon = 0;
+        }
+
+        const payoutRes = await fetch(`${base}/api/pi/payments/payout`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            accessToken: piAccessToken,
+            amount: piAmount,
+            memo: `KRSLOT 게임종료 ${krBalance.toLocaleString("ko-KR")} KR 환급`,
+            metadata: {
+              type: "cashout",
+              krBalance,
+              krBet: sessionKrBet,
+              krWon: sessionKrWon,
+              krConsumed,
+              piAmount,
+              rate: PI_TO_KR_RATE,
+              uid: piUser?.uid || null,
+              username: piUser?.username || null,
+            },
+          }),
+        });
+        const payoutData = await payoutRes.json().catch(() => ({}));
+        if (!payoutRes.ok || !payoutData.success) {
+          throw new Error(payoutData.error || "π 출금(유저 지갑)에 실패했습니다.");
+        }
+
+        balance = 0;
+        resetGameSession();
+        updateHud();
+        Sfx.withdraw();
+        const settleNote =
+          krConsumed > 0
+            ? `<br><small>베팅 ${krConsumed.toLocaleString("ko-KR")} KR → 제작자 지갑 ${formatPi(krToPiAmount(krConsumed))}</small>`
+            : "";
+        messageEl.innerHTML =
+          `게임 종료 · <strong>${formatPi(piAmount)}</strong>이 유저 지갑으로 입금되었습니다.${settleNote}`;
+        messageEl.className = "message win";
+      } catch (err) {
+        messageEl.textContent = err?.message || "게임 종료·π 출금에 실패했습니다.";
+        messageEl.className = "message lose";
+        Sfx.lose();
+        console.warn("Pi cashout:", err);
+      } finally {
+        piPaymentBusy = false;
+        updateControls();
+      }
+    }
+
+    function claimFreeKr() {
+      if (spinning || autoMode) return;
+      Sfx.unlock();
+      Sfx.click();
+      balance += FREE_BONUS;
+      updateHud();
+      updateControls();
+      Sfx.deposit();
+      messageEl.innerHTML =
+        `<strong>FREE</strong> 보너스 · <strong>+${FREE_BONUS.toLocaleString("ko-KR")} ${COIN}</strong> 지급! (보유 ${balance.toLocaleString("ko-KR")} ${COIN})`;
+      messageEl.className = "message win";
+    }
+
+    function stopAuto(reason) {
+      stopRequested = true;
+      autoMode = false;
+      speechSynthesis?.cancel();
+      Sfx.stopSpinLoop();
+      updateControls();
+      if (!spinning && reason) {
+        messageEl.innerHTML = reason;
+        messageEl.className = "message";
+        onGameStopSettle();
+      }
+    }
+
+    function startAuto() {
+      if (!isPlayAllowed() || spinning || autoMode || balance < bet) return;
+      Sfx.unlock();
+      autoMode = true;
+      stopRequested = false;
+      updateControls();
+      messageEl.innerHTML = `<strong>AUTO</strong> 스핀 중… STOP으로 중지`;
+      messageEl.className = "message";
+      spin();
+    }
+
+    async function scheduleNextAuto() {
+      if (!autoMode || stopRequested) return;
+      if (balance < bet) {
+        stopAuto(`${COIN} 잔액 부족으로 AUTO를 종료했습니다.`);
+        Sfx.lose();
+        return;
+      }
+      await delay(AUTO_GAP_MS);
+      if (autoMode && !stopRequested) spin();
+    }
+
+    function updateHud() {
+      balanceEl.innerHTML = formatKr(balance);
+      betDisplayEl.innerHTML = formatKr(bet);
+      saveBalance();
+    }
+
+    function setLastWin(amount) {
+      lastWinEl.innerHTML = formatKr(amount);
+    }
+
+    function initReels() {
+      reelsEl.innerHTML = "";
+      reelStrips = [];
+      reelOffsets = [];
+      for (let r = 0; r < REEL_COUNT; r++) {
+        const stripLen = 24 + r * 4;
+        const symbols = randomStrip(stripLen);
+        reelStrips.push(symbols);
+        reelOffsets.push(Math.floor(Math.random() * (stripLen - VISIBLE)));
+
+        const reel = document.createElement("div");
+        reel.className = "reel";
+        reel.dataset.index = r;
+        const stripEl = document.createElement("div");
+        stripEl.className = "reel-strip";
+        symbols.forEach((sym) => stripEl.appendChild(renderSymbolEl(sym)));
+        reel.appendChild(stripEl);
+        reelsEl.appendChild(reel);
+      }
+      syncSymbolHeight();
+      for (let r = 0; r < REEL_COUNT; r++) positionReel(r, false);
+    }
+
+    function positionReel(reelIndex, animate, durationMs) {
+      syncSymbolHeight();
+      const reel = reelsEl.children[reelIndex];
+      if (!reel) return 0;
+      const strip = reel.querySelector(".reel-strip");
+      const y = -reelOffsets[reelIndex] * SYMBOL_H;
+      const dur = durationMs ?? SPIN_MS + reelIndex * 450;
+      strip.style.transition = animate
+        ? `transform ${dur}ms cubic-bezier(0.15, 0.85, 0.25, 1)`
+        : "none";
+      strip.style.transform = `translateY(${y}px)`;
+      return dur;
+    }
+
+    /** 3×3 보이는 칸 [행][열] — 행0=위, 행1=가운데, 행2=아래 */
+    function getVisibleGrid() {
+      const grid = [];
+      for (let row = 0; row < VISIBLE; row++) {
+        const line = [];
+        for (let col = 0; col < REEL_COUNT; col++) {
+          line.push(reelStrips[col][reelOffsets[col] + row]);
+        }
+        grid.push(line);
+      }
+      return grid;
+    }
+
+    const PAYLINES = [
+      { id: "middle", label: "가운데 줄", cells: [[0, 1], [1, 1], [2, 1]], minMatch: 3 },
+      { id: "diagDown", label: "대각선 ↘", cells: [[0, 0], [1, 1], [2, 2]], minMatch: 2 },
+      { id: "diagUp", label: "대각선 ↙", cells: [[0, 2], [1, 1], [2, 0]], minMatch: 2 },
+    ];
+
+    const ISLAND_IDS = ["ieodo", "dokdo", "baengnyeong", "gageo", "gyeokryeol"];
+
+    function getSymbolKrPrize(sym) {
+      if (sym.type === "special") {
+        if (sym.id === "tugeobi") return PRIZE_KR_TUGEOBI;
+        if (ISLAND_IDS.includes(sym.id)) return PRIZE_KR_ISLAND;
+        return sym.krPrize || PRIZE_KR_ISLAND;
+      }
+      return PRIZE_KR_JAMO;
+    }
+
+    function calcSymbolPayout(sym, matchCount, lineLabel, segment) {
+      const krPrize = getSymbolKrPrize(sym);
+      const piPrize = krToPiAmount(krPrize);
+      const seg = segment ? ` (${segment})` : "";
+      const matchText = matchCount >= 3 ? "3칸" : "2칸";
+      const pronounceTimes = matchCount >= 3 ? PRONOUNCE_TIMES : 2;
+
+      if (sym.type === "special") {
+        return {
+          payout: krPrize,
+          piAmount: piPrize,
+          desc: `${lineLabel} ${matchText} ${sym.label}! · ${krPrize.toLocaleString("ko-KR")} KR (≈ ${formatPi(piPrize)})`,
+          sym,
+          pronounceTimes,
+        };
+      }
+      return {
+        payout: krPrize,
+        piAmount: piPrize,
+        desc: `${lineLabel} ${matchText} ${sym.char}! ${JAMO_SPEAK[sym.char] || ""}${seg} · ${krPrize.toLocaleString("ko-KR")} KR`,
+        sym,
+        pronounceTimes,
+      };
+    }
+
+    /** 한 줄에서 앞 2칸·뒤 2칸·3칸 일치 검사 */
+    function evaluatePayline(grid, line) {
+      const syms = line.cells.map(([col, row]) => grid[row][col]);
+      const keys = syms.map(symbolKey);
+
+      if (keys.every((k) => k === keys[0])) {
+        return calcSymbolPayout(syms[0], 3, line.label);
+      }
+      if (line.minMatch <= 2) {
+        if (keys[0] === keys[1]) {
+          return calcSymbolPayout(syms[0], 2, line.label, "앞 2칸");
+        }
+        if (keys[1] === keys[2]) {
+          return calcSymbolPayout(syms[1], 2, line.label, "뒤 2칸");
+        }
+      }
+      return null;
+    }
+
+    /** 가운데 3칸 + 대각선 2칸 이상 일치 시 최고 상금 반환 */
+    function evaluateWin() {
+      const grid = getVisibleGrid();
+      const hits = PAYLINES.map((line) => evaluatePayline(grid, line)).filter(Boolean);
+      if (!hits.length) {
+        return { payout: 0, desc: "", sym: null, pronounceTimes: 0 };
+      }
+      hits.sort((a, b) => b.payout - a.payout);
+      return hits[0];
+    }
+
+    async function spin() {
+      Sfx.unlock();
+      if (!isPlayAllowed()) {
+        const blockMsg = getPlayBlockMessage();
+        if (blockMsg) {
+          messageEl.innerHTML = blockMsg;
+          messageEl.className = "message lose";
+        }
+        if (autoMode) stopAuto(null);
+        return;
+      }
+      if (spinning || balance < bet) {
+        if (balance < bet) {
+          messageEl.innerHTML = getPlayBlockMessage() || `${COIN} 잔액이 부족합니다. (보유 ${balance.toLocaleString("ko-KR")} ${COIN})`;
+          messageEl.className = "message lose";
+          Sfx.lose();
+          if (autoMode) stopAuto(null);
+        }
+        return;
+      }
+      spinning = true;
+      updateControls();
+      speechSynthesis?.cancel();
+      sessionKrBet += bet;
+      balance -= bet;
+      updateHud();
+      Sfx.click();
+      Sfx.spinStart();
+      Sfx.startSpinLoop();
+      messageEl.innerHTML = `베팅 −${bet.toLocaleString("ko-KR")} ${COIN} · 돌아가는 중…`;
+      messageEl.className = "message";
+      machineEl.classList.remove("winning");
+      gameFrameEl.classList.remove("winning");
+
+      const targets = [];
+      for (let r = 0; r < REEL_COUNT; r++) {
+        const extra = 10 + r * 4 + Math.floor(Math.random() * 6);
+        const strip = reelStrips[r];
+        const newSymbols = [];
+        for (let i = 0; i < extra; i++) newSymbols.push(weightedPick());
+        const reelEl = reelsEl.children[r];
+        const stripEl = reelEl.querySelector(".reel-strip");
+        newSymbols.forEach((sym) => stripEl.appendChild(renderSymbolEl(sym)));
+        reelStrips[r] = strip.concat(newSymbols);
+        const maxStart = reelStrips[r].length - VISIBLE - 1;
+        const landing = Math.min(maxStart, reelOffsets[r] + extra);
+        targets.push(landing);
+      }
+
+      let maxDur = 0;
+      for (let r = 0; r < REEL_COUNT; r++) {
+        reelOffsets[r] = targets[r];
+        const dur = positionReel(r, true);
+        maxDur = Math.max(maxDur, dur);
+        const reelEl = reelsEl.children[r];
+        setTimeout(() => {
+          Sfx.reelStop(r);
+          reelEl.classList.add("stopping");
+          setTimeout(() => reelEl.classList.remove("stopping"), 300);
+        }, dur - 40);
+      }
+
+      await delay(maxDur + 80);
+
+      Sfx.stopSpinLoop();
+      const { payout, piAmount, desc, sym, pronounceTimes } = evaluateWin();
+
+      if (payout > 0) {
+        sessionKrWon += payout;
+        const pron = getPronunciation(sym);
+        const times = pronounceTimes || PRONOUNCE_TIMES;
+        machineEl.classList.add("winning");
+        gameFrameEl.classList.add("winning");
+        Sfx.winBig();
+
+        const usePiPayout =
+          isPiBrowserEnv() && piConnected && piAccessToken && getPiBackendBase();
+
+        if (usePiPayout) {
+          piPaymentBusy = true;
+          updateControls();
+          messageEl.innerHTML =
+            `당첨! <strong>${payout.toLocaleString("ko-KR")} KR</strong> → π 지갑 입금 중…<br>` +
+            `<small>${desc}</small>`;
+          messageEl.className = "message win";
+
+          const payResult = await payWinPi(payout, {
+            desc,
+            symbolId: sym?.id || sym?.char || null,
+            symbolLabel: sym?.label || sym?.char || null,
+          });
+          piPaymentBusy = false;
+
+          if (payResult.success) {
+            setLastWin(payout);
+            messageEl.innerHTML =
+              `당첨! <strong>+${formatPi(payResult.piAmount)}</strong> π 지갑 입금 완료<br>` +
+              `<small>${desc}</small><br>` +
+              `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
+          } else {
+            balance += payout;
+            setLastWin(payout);
+            messageEl.innerHTML =
+              `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> (π 입금 실패 → KR 잔액)<br>` +
+              `<small>${payResult.error || "지급 오류"} · ${desc}</small><br>` +
+              `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
+          }
+        } else {
+          balance += payout;
+          setLastWin(payout);
+          messageEl.innerHTML =
+            `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> — ${desc}<br>` +
+            `<small>「${pron}」 발음 ${times}회 · (데모: ≈ ${formatPi(piAmount || krToPiAmount(payout))})</small>`;
+          messageEl.className = "message win";
+        }
+
+        if (!stopRequested) await pronounceNTimes(sym, times);
+        if (stopRequested) speechSynthesis?.cancel();
+      } else {
+        setLastWin(0);
+        messageEl.innerHTML = `당첨 없음 · 베팅 ${bet.toLocaleString("ko-KR")} ${COIN} 차감됨`;
+        messageEl.className = "message lose";
+        Sfx.lose();
+      }
+      updateHud();
+      spinning = false;
+      updateControls();
+
+      if (stopRequested && !autoMode) {
+        await onGameStopSettle();
+      }
+
+      if (autoMode && !stopRequested) scheduleNextAuto();
+    }
+
+    spinBtn.addEventListener("click", () => {
+      stopRequested = false;
+      spin();
+    });
+
+    autoBtn.addEventListener("click", startAuto);
+
+    stopBtn.addEventListener("click", async () => {
+      if (!autoMode && !spinning) return;
+      const wasAuto = autoMode;
+      stopAuto(
+        wasAuto ? "STOP — 자동 스핀을 중지했습니다." : "STOP — 진행 중인 동작을 중지했습니다."
+      );
+      if (!spinning) await onGameStopSettle();
+    });
+
+    const soundToggle = document.getElementById("soundToggle");
+    soundToggle.addEventListener("click", () => {
+      Sfx.unlock();
+      const next = !Sfx.isMuted();
+      Sfx.setMuted(next);
+      soundToggle.classList.toggle("muted", next);
+      soundToggle.textContent = next ? "🔇 음소거" : "🔊 사운드";
+      soundToggle.setAttribute("aria-pressed", String(next));
+      if (!next) Sfx.click();
+    });
+    document.querySelectorAll(".bet-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (spinning || autoMode) return;
+        document.querySelectorAll(".bet-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        bet = Number(btn.dataset.bet);
+        updateHud();
+        updateControls();
+      });
+    });
+
+    document.querySelectorAll(".bank-preset").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (spinning || autoMode) return;
+        document.querySelectorAll(".bank-preset").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        bankPiAmount = Number(btn.dataset.pi);
+        updateControls();
+        Sfx.click();
+      });
+    });
+
+    depositBtn.addEventListener("click", depositPi);
+    withdrawBtn.addEventListener("click", cashOutGamePi);
+    freeBtn.addEventListener("click", claimFreeKr);
+    piLoginBtn?.addEventListener("click", () => handlePiLogin(false));
+
+    function syncSymbolHeight() {
+      const sym = document.querySelector(".symbol");
+      if (!sym) return;
+      const h = sym.getBoundingClientRect().height;
+      if (h > 0) SYMBOL_H = h;
+    }
+
+    let resizeTimer;
+    function onViewportChange() {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        syncSymbolHeight();
+        for (let r = 0; r < REEL_COUNT; r++) positionReel(r, false);
+      }, 120);
+    }
+
+    function bootGame() {
+      try {
+        initReels();
+        setLastWin(0);
+        updateHud();
+        updateControls();
+      } catch (err) {
+        console.error("bootGame error:", err);
+      }
+    }
+
+    bootGame();
+    initPiSdk().catch((err) => console.warn("initPiSdk:", err));
+    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("orientationchange", onViewportChange);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", onViewportChange);
+    }
+  </script>
+</body>
+</html>
