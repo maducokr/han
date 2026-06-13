@@ -841,11 +841,10 @@
     const PI_SANDBOX_SESSION_KEY = "hangul-slot-pi-sandbox-mode";
     const PI_DEPOSIT_FLAG_PREFIX = "hangul-slot-pi-deposited-";
     /**
-     * Pi App Studio 스코프 (범위 최소화)
-     * - 로그인: username 만 (기본)
-     * - π 입금 시: payments 추가 요청
+     * Pi App Studio 스코프
+     * - 로그인: username + payments (입금 필수 게임 — 입금 시 재인증 지연 방지)
      */
-    const PI_AUTH_SCOPES_LOGIN = ["username"];
+    const PI_AUTH_SCOPES_LOGIN = ["username", "payments"];
     const PI_AUTH_SCOPES_PAYMENT = ["username", "payments"];
 
     function piToKr(piAmount) {
@@ -1254,7 +1253,12 @@
         return new Promise((resolve, reject) => {
           const callbacks = createU2APaymentCallbacks(accessToken, {
             onCompleted: resolve,
-            onCancel: () => reject(new Error("π 결제가 취소되었습니다.")),
+            onCancel: () =>
+              reject(
+                new Error(
+                  "π 결제가 취소되었습니다. (승인 시간 초과·서버 approve 실패·사용자 취소 중 하나)"
+                )
+              ),
             onError: (error) =>
               reject(error instanceof Error ? error : new Error("π 결제 오류")),
           });
@@ -1323,7 +1327,7 @@
         ...body,
         sandbox: body?.sandbox ?? isPiSandboxMode(),
       };
-      const maxAttempts = pathKey === "approve" ? 5 : 2;
+      const maxAttempts = pathKey === "approve" ? 3 : 2;
 
       let lastError = null;
       for (let i = 0; i < bases.length; i++) {
@@ -1406,7 +1410,14 @@
       const h = handlers || {};
       return {
         onReadyForServerApproval: async (paymentId) => {
-          await postPiU2A("approve", { paymentId, accessToken });
+          const t0 = Date.now();
+          try {
+            await postPiU2A("approve", { paymentId, accessToken });
+            console.info("[Pi] approve OK", paymentId, Date.now() - t0, "ms");
+          } catch (err) {
+            console.error("[Pi] approve FAIL", paymentId, Date.now() - t0, "ms", err);
+            throw err;
+          }
         },
         onReadyForServerCompletion: async (paymentId, txid) => {
           await postPiU2A("complete", { paymentId, transactionId: txid, txid });
@@ -1574,8 +1585,11 @@
         }
       }
 
-      /** π 입금 전 payments 스코프 — Pi SDK에 매번 재인증 (캐시 플래그만으로는 createPayment 불가) */
+      /** π 입금 — payments 스코프 토큰 확보 (로그인 시 이미 포함되면 즉시 반환) */
       async ensurePaymentsAuth() {
+        if (this.paymentsScopeGranted && this.accessToken && this.user) {
+          return { success: true, accessToken: this.accessToken, user: this.user };
+        }
         try {
           const auth = await this.client.authenticate(PI_AUTH_SCOPES_PAYMENT, onIncompletePayment);
           if (!auth?.accessToken) {
@@ -1583,16 +1597,11 @@
             return { success: false, error: "payments 권한이 필요합니다. Pi Browser에서 결제 권한을 허용해 주세요." };
           }
 
-          let verifiedUser;
-          try {
-            verifiedUser = await verifyPiAccessToken(auth.accessToken);
-          } catch (verifyErr) {
-            const uid = auth.user?.uid;
-            if (uid && /failed to fetch|network|502|503|verification/i.test(verifyErr?.message || "")) {
-              verifiedUser = { uid, username: auth.user?.username || null };
-            } else {
-              throw verifyErr;
-            }
+          const verifiedUser = auth.user?.uid
+            ? { uid: auth.user.uid, username: auth.user?.username || null }
+            : await verifyPiAccessToken(auth.accessToken).catch(() => null);
+          if (!verifiedUser?.uid) {
+            return { success: false, error: "사용자 정보를 확인할 수 없습니다." };
           }
 
           this.accessToken = auth.accessToken;
@@ -1946,6 +1955,7 @@
       updatePiUI(true);
       updateHud();
       updateControls();
+      warmPiBackend().catch(() => {});
       const name = piUser?.username ? `@${piUser.username}` : "Pi 사용자";
       const uidHint = piUser?.uid ? `<br><small>UID: ${piUser.uid}</small>` : "";
       const playHint = getPlayBlockMessage();
@@ -2419,8 +2429,11 @@
         let hint = "";
         if (/payments.*scope|without.*payments|결제 권한/i.test(msg)) {
           hint =
-            "<br><small>로그인은 <strong>username</strong>만 되어 있을 수 있습니다. 입금 시 <strong>payments</strong> 권한 팝업에서 <strong>허용</strong>을 눌러 주세요.</small>";
-        } else if (isPiSandboxMode() && /approve|api key|502|503/i.test(msg)) {
+            "<br><small>Pi Browser 팝업에서 <strong>payments(결제)</strong> 권한을 허용해 주세요.</small>";
+        } else if (/취소|cancel|timeout|만료|expired/i.test(msg)) {
+          hint =
+            "<br><small>서버 approve가 20초 내 완료되어야 합니다. Render <strong>PI_SANDBOX_API_KEY</strong>(Testnet) 확인 후 다시 시도하세요.</small>";
+        } else if (isPiSandboxMode() && /approve|api key|502|503|payment_not_found/i.test(msg)) {
           hint =
             "<br><small>Render <strong>PI_SANDBOX_API_KEY</strong>(Developer Portal Testnet) 확인</small>";
         }

@@ -211,7 +211,7 @@ app.use("/api/", globalApiLimiter);
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    version: "2026-06-13d",
+    version: "2026-06-13e",
     pi: {
       stack: PI_STACK.backend,
       package: PI_STACK.backendPackage,

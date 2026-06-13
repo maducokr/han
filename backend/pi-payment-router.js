@@ -121,6 +121,9 @@ function createApproveHandler(verifyAccessToken, options) {
       if (!paymentId) {
         return res.status(400).json({ success: false, error: "paymentId required" });
       }
+      if (paymentId === "__warmup__") {
+        return res.json({ success: true, result: "warmup", paymentId });
+      }
       /* Pi SDK 승인 타임아웃(~20s) — approve를 최우선, accessToken 검증은 생략 */
       const pi = resolvePiExpress(opts, sandbox);
       const payment = await pi.approvePayment(paymentId);
