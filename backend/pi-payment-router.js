@@ -1,16 +1,19 @@
 /**
- * pi-sdk-express 호환 U2A 결제 라우터 (Express)
- * ※ Rails(pi-sdk-rails) 미사용 — 이 프로젝트 스택은 Express + pi-backend(A2U)
- * @see https://github.com/pi-apps/pi-sdk-express
- * npm 패키지 미배포 시 로컬 구현 — API 경로·페이로드 동일
+ * pi-sdk-express 호환 — PiExpress + U2A 결제 라우터
+ * GenAI 워크플로: approve(paymentId) → 블록체인 txid → complete(paymentId, txid)
+ * @see https://pi-apps.github.io/pi-sdk-docs/
  */
 const { Router } = require("express");
 
-function getPiServerConfig() {
-  const apiUrlBase = process.env.PI_API_URL_BASE || process.env.PI_API_BASE || "https://api.minepi.com";
+function getPiServerConfig(overrides = {}) {
+  const apiUrlBase =
+    overrides.apiBase ||
+    process.env.PI_API_URL_BASE ||
+    process.env.PI_API_BASE ||
+    "https://api.minepi.com";
   const apiVersion = process.env.PI_API_VERSION || "v2";
   const apiController = process.env.PI_API_CONTROLLER || "payments";
-  const apiKey = process.env.PI_API_KEY || "";
+  const apiKey = overrides.apiKey || process.env.PI_API_KEY || "";
   if (!apiKey) {
     throw new Error("PI_API_KEY is not configured");
   }
@@ -18,7 +21,7 @@ function getPiServerConfig() {
 }
 
 async function postToPiServer(action, paymentId, body = {}, opts = {}) {
-  const { apiUrlBase, apiVersion, apiController, apiKey } = getPiServerConfig();
+  const { apiUrlBase, apiVersion, apiController, apiKey } = getPiServerConfig(opts);
   const url = `${apiUrlBase.replace(/\/$/, "")}/${apiVersion}/${apiController}/${paymentId}/${action}`;
   const headers = {
     "Content-Type": "application/json",
@@ -58,10 +61,53 @@ async function postToPiServer(action, paymentId, body = {}, opts = {}) {
 }
 
 function pickTransactionId(body) {
-  return body?.transactionId || body?.txid || null;
+  return body?.txid || body?.transactionId || null;
 }
 
-function createApproveHandler(verifyAccessToken) {
+/**
+ * pi-sdk-express PiExpress — approvePayment / completePayment
+ * const pi = new PiExpress({ apiKey, walletPrivateSeed });
+ */
+class PiExpress {
+  constructor(options = {}) {
+    this.apiKey = options.apiKey || process.env.PI_API_KEY || "";
+    this.walletPrivateSeed = options.walletPrivateSeed || process.env.PI_WALLET_SEED || "";
+    this.apiBase = options.apiBase || process.env.PI_API_BASE || "https://api.minepi.com";
+    if (!this.apiKey) {
+      throw new Error("PiExpress: apiKey (PI_API_KEY) is required");
+    }
+  }
+
+  _logOpts(paymentId) {
+    return {
+      apiKey: this.apiKey,
+      apiBase: this.apiBase,
+      logOk: (msg) => console.info("[PiExpress]", msg, paymentId),
+      logFail: (msg, err) =>
+        console.warn("[PiExpress]", msg, paymentId, err?.message || err),
+    };
+  }
+
+  /** onReadyForServerApproval — Pi Platform /payments/:id/approve */
+  async approvePayment(paymentId) {
+    if (!paymentId) throw new Error("paymentId required");
+    return postToPiServer("approve", paymentId, {}, this._logOpts(paymentId));
+  }
+
+  /** onReadyForServerCompletion — Pi Platform /payments/:id/complete */
+  async completePayment(paymentId, txid) {
+    if (!paymentId || !txid) throw new Error("paymentId and txid required");
+    return postToPiServer("complete", paymentId, { txid }, this._logOpts(paymentId));
+  }
+
+  async cancelPayment(paymentId) {
+    if (!paymentId) throw new Error("paymentId required");
+    return postToPiServer("cancel", paymentId, {}, this._logOpts(paymentId));
+  }
+}
+
+function createApproveHandler(verifyAccessToken, piExpress) {
+  const pi = piExpress || new PiExpress();
   return async function approveHandler(req, res) {
     try {
       const { accessToken, paymentId } = req.body || {};
@@ -74,10 +120,7 @@ function createApproveHandler(verifyAccessToken) {
       if (verifyAccessToken) {
         await verifyAccessToken(accessToken);
       }
-      const payment = await postToPiServer("approve", paymentId, {}, {
-        logOk: (msg) => console.info("[pi-payment]", msg, paymentId),
-        logFail: (msg, err) => console.warn("[pi-payment]", msg, paymentId, err?.message || err),
-      });
+      const payment = await pi.approvePayment(paymentId);
       return res.json({ success: true, result: "approved", paymentId, payment });
     } catch (err) {
       const status = err.status === 401 ? 401 : err.status >= 400 && err.status < 600 ? err.status : 502;
@@ -89,26 +132,19 @@ function createApproveHandler(verifyAccessToken) {
   };
 }
 
-function createCompleteHandler() {
+function createCompleteHandler(piExpress) {
+  const pi = piExpress || new PiExpress();
   return async function completeHandler(req, res) {
     try {
       const { paymentId } = req.body || {};
-      const transactionId = pickTransactionId(req.body);
-      if (!paymentId || !transactionId) {
+      const txid = pickTransactionId(req.body);
+      if (!paymentId || !txid) {
         return res.status(400).json({
           success: false,
-          error: "paymentId and transactionId required",
+          error: "paymentId and txid required",
         });
       }
-      const payment = await postToPiServer(
-        "complete",
-        paymentId,
-        { txid: transactionId },
-        {
-          logOk: (msg) => console.info("[pi-payment]", msg, paymentId),
-          logFail: (msg, err) => console.warn("[pi-payment]", msg, paymentId, err?.message || err),
-        }
-      );
+      const payment = await pi.completePayment(paymentId, txid);
       return res.json({ success: true, result: "completed", paymentId, payment });
     } catch (err) {
       const status = err.status >= 400 && err.status < 600 ? err.status : 502;
@@ -120,17 +156,15 @@ function createCompleteHandler() {
   };
 }
 
-function createCancelHandler() {
+function createCancelHandler(piExpress) {
+  const pi = piExpress || new PiExpress();
   return async function cancelHandler(req, res) {
     try {
       const { paymentId } = req.body || {};
       if (!paymentId) {
         return res.status(400).json({ success: false, error: "paymentId required" });
       }
-      const payment = await postToPiServer("cancel", paymentId, {}, {
-        logOk: (msg) => console.info("[pi-payment]", msg, paymentId),
-        logFail: (msg, err) => console.warn("[pi-payment]", msg, paymentId, err?.message || err),
-      });
+      const payment = await pi.cancelPayment(paymentId);
       return res.json({ success: true, result: "cancelled", paymentId, payment });
     } catch (err) {
       const status = err.status >= 400 && err.status < 600 ? err.status : 502;
@@ -150,30 +184,29 @@ function createErrorHandler() {
   };
 }
 
-function createIncompleteHandler(incompleteCallback) {
+function createIncompleteHandler(incompleteCallback, piExpress) {
+  const pi = piExpress || new PiExpress();
   return async function incompleteHandler(req, res) {
     try {
       const { paymentId } = req.body || {};
-      const transactionId = pickTransactionId(req.body);
-      if (!paymentId || !transactionId) {
+      const txid = pickTransactionId(req.body);
+      if (!paymentId || !txid) {
         return res.status(400).json({
           success: false,
-          error: "paymentId and transactionId required",
+          error: "paymentId and txid required",
         });
       }
 
       let decision = "complete";
       if (incompleteCallback) {
-        const result = await incompleteCallback(paymentId, transactionId, req.body);
+        const result = await incompleteCallback(paymentId, txid, req.body);
         decision = result === "cancel" ? "cancel" : "complete";
       }
 
-      const action = decision === "cancel" ? "cancel" : "complete";
-      const body = action === "complete" ? { txid: transactionId } : {};
-      const payment = await postToPiServer(action, paymentId, body, {
-        logOk: (msg) => console.info("[pi-payment]", msg, paymentId, decision),
-        logFail: (msg, err) => console.warn("[pi-payment]", msg, paymentId, err?.message || err),
-      });
+      const payment =
+        decision === "cancel"
+          ? await pi.cancelPayment(paymentId)
+          : await pi.completePayment(paymentId, txid);
 
       return res.json({ success: true, result: decision, paymentId, payment });
     } catch (err) {
@@ -187,25 +220,34 @@ function createIncompleteHandler(incompleteCallback) {
 }
 
 /**
- * pi-sdk-express createPiPaymentRouter 호환
- * @param {{ verifyAccessToken?: (token: string) => Promise<object>, incompleteCallback?: Function, middleware?: Function[] }} options
+ * U2A 결제 라우터 — /approve · /complete · /cancel · /error · /incomplete
+ * @param {{ piExpress?: PiExpress, verifyAccessToken?: Function, incompleteCallback?: Function, middleware?: Function[] }} options
  */
 function createPiPaymentRouter(options = {}) {
   const router = Router();
-  const { verifyAccessToken, incompleteCallback, middleware = [] } = options;
+  const { piExpress, verifyAccessToken, incompleteCallback, middleware = [] } = options;
+  const pi = piExpress || (process.env.PI_API_KEY ? new PiExpress() : null);
 
   middleware.forEach((fn) => router.use(fn));
 
-  router.post("/approve", createApproveHandler(verifyAccessToken));
-  router.post("/complete", createCompleteHandler());
-  router.post("/cancel", createCancelHandler());
+  if (!pi) {
+    router.use((_req, res) => {
+      res.status(503).json({ success: false, error: "Service unavailable" });
+    });
+    return router;
+  }
+
+  router.post("/approve", createApproveHandler(verifyAccessToken, pi));
+  router.post("/complete", createCompleteHandler(pi));
+  router.post("/cancel", createCancelHandler(pi));
   router.post("/error", createErrorHandler());
-  router.post("/incomplete", createIncompleteHandler(incompleteCallback));
+  router.post("/incomplete", createIncompleteHandler(incompleteCallback, pi));
 
   return router;
 }
 
 module.exports = {
+  PiExpress,
   createPiPaymentRouter,
   postToPiServer,
   getPiServerConfig,

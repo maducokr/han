@@ -14,7 +14,7 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const axios = require("axios");
 const PiNetwork = require("pi-backend").default;
-const { createPiPaymentRouter } = require("./pi-payment-router");
+const { PiExpress, createPiPaymentRouter } = require("./pi-payment-router");
 
 const IS_PROD = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT) || 3000;
@@ -227,16 +227,32 @@ app.post("/api/pi/verify", verifyLimiter, async (req, res) => {
   }
 });
 
+/** pi-sdk-express PiExpress — U2A approve/complete + A2U payout(pi-backend) */
+let piExpress = null;
+function getPiExpress() {
+  if (!PI_API_KEY) {
+    throw new Error("PI_API_KEY is not configured");
+  }
+  if (!piExpress) {
+    piExpress = new PiExpress({
+      apiKey: PI_API_KEY,
+      walletPrivateSeed: PI_WALLET_SEED,
+      apiBase: PI_API_BASE,
+    });
+  }
+  return piExpress;
+}
+
 /**
- * U2A 결제 — pi-sdk-express 호환 라우터
- * approve · complete · cancel · error · incomplete
- * @see https://pi-apps.github.io/pi-sdk-docs/
+ * U2A 결제 — pi-sdk-express PiExpress
+ * 프론트 createPayment → paymentId → approve → (블록체인 txid) → complete
  */
 if (PI_API_KEY) {
   app.use(
     "/api/pi/payments",
     paymentLimiter,
     createPiPaymentRouter({
+      piExpress: getPiExpress(),
       verifyAccessToken,
       incompleteCallback: async () => "complete",
     })
