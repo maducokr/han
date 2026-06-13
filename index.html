@@ -1359,16 +1359,207 @@
         return this.login(PI_AUTH_SCOPES_PAYMENT);
       }
 
-      /** U2A π 입금 — piSdk.createPaymentAsync 단일 경로 */
-      async depositU2A(paymentData) {
+      /** U2A π 입금 — usePiPurchase().pay() 내부에서만 호출 */
+      async executeU2APayment(paymentData, accessToken) {
         await this.sdk.ensureReady();
-        const token = this.accessToken || piAccessToken;
-        if (!token) {
-          throw new Error("π 입금을 위해 Pi 로그인이 필요합니다.");
+        if (!accessToken) {
+          throw new Error("π 결제를 위해 Pi 로그인이 필요합니다.");
         }
-        return this.sdk.createPaymentAsync(paymentData, token);
+        return this.sdk.createPaymentAsync(paymentData, accessToken);
       }
     }
+
+    /**
+     * pi-sdk-react 훅 패턴 — 바닐라 JS 대응
+     * | React              | 이 프로젝트 (HTML)        |
+     * | usePiConnection    | getPiConnection / connectPi |
+     * | usePiPurchase      | usePiPurchase(data).pay()   |
+     * | usePiAds           | usePiAds() (Ads 전용 래퍼)  |
+     * 컴포넌트·이벤트 핸들러에서 window.Pi.* 직접 호출 금지
+     */
+    const piConnectionListeners = new Set();
+
+    function getPiConnection() {
+      return {
+        connected: piConnected,
+        user: piUser,
+        accessToken: piAccessToken,
+        ready: piSdkReady,
+      };
+    }
+
+    function syncPiConnectionState(patch) {
+      if (patch.connected !== undefined) piConnected = patch.connected;
+      if (patch.user !== undefined) piUser = patch.user;
+      if (patch.accessToken !== undefined) piAccessToken = patch.accessToken;
+      if (patch.ready !== undefined) piSdkReady = patch.ready;
+      if (piService) {
+        if (patch.user !== undefined) piService.user = patch.user;
+        if (patch.accessToken !== undefined) piService.accessToken = patch.accessToken;
+      }
+      const snapshot = getPiConnection();
+      piConnectionListeners.forEach((fn) => {
+        try {
+          fn(snapshot);
+        } catch (_) {}
+      });
+      return snapshot;
+    }
+
+    function subscribePiConnection(listener) {
+      piConnectionListeners.add(listener);
+      return () => piConnectionListeners.delete(listener);
+    }
+
+    /** usePiConnection().connect — window.Pi.authenticate 대체 */
+    async function connectPi(options) {
+      const opts = options || {};
+      const silent = !!opts.silent;
+      const scopes = opts.scopes || PI_AUTH_SCOPES_LOGIN;
+
+      if (piLoginBusy) return { success: false, error: "busy" };
+      if (!piService) {
+        if (!silent) {
+          messageEl.textContent = "Pi SDK를 불러오는 중입니다. 잠시 후 다시 시도해 주세요.";
+          messageEl.className = "message";
+        }
+        return { success: false, error: "Pi SDK not ready" };
+      }
+      if (!piSdk.isAvailable()) {
+        if (!silent) {
+          messageEl.innerHTML =
+            "Pi Browser에서 앱을 열어 <strong>Pi 로그인</strong>을 진행해 주세요.";
+          messageEl.className = "message";
+        }
+        syncPiConnectionState({ connected: false, user: null, accessToken: null });
+        updatePiUI(false);
+        return { success: false, error: "not Pi Browser" };
+      }
+
+      try {
+        await piSdk.ensureReady();
+      } catch (err) {
+        if (!silent) {
+          messageEl.textContent =
+            err?.message || "Pi SDK 초기화에 실패했습니다. 앱을 새로고침해 주세요.";
+          messageEl.className = "message lose";
+        }
+        return { success: false, error: err?.message || "init failed" };
+      }
+
+      piLoginBusy = true;
+      if (!silent && piLoginBtn) {
+        piLoginBtn.disabled = true;
+        piLoginBtn.textContent = "연결 중…";
+      }
+
+      try {
+        const result = await Promise.race([
+          piService.login(scopes),
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("연결 시간이 초과되었습니다. 버튼을 다시 눌러 주세요.")),
+              PI_CONNECT_TIMEOUT_MS
+            )
+          ),
+        ]);
+        if (result.success) {
+          syncPiConnectionState({
+            connected: true,
+            user: result.user,
+            accessToken: result.accessToken,
+          });
+          onPiAuthenticated();
+          return result;
+        }
+        syncPiConnectionState({ connected: false, user: null, accessToken: null });
+        updatePiUI(false);
+        if (!silent) {
+          const mode = isPiSandboxMode() ? "sandbox" : "production";
+          messageEl.textContent =
+            "로그인 실패: " + (result.error || "알 수 없는 오류") + ` (${mode})`;
+          messageEl.className = "message lose";
+        }
+        return result;
+      } catch (error) {
+        syncPiConnectionState({ connected: false, user: null, accessToken: null });
+        clearPiSession();
+        updatePiUI(false);
+        if (!silent) {
+          const mode = isPiSandboxMode() ? "sandbox" : "production";
+          messageEl.textContent = `${formatPiAuthError(error)} (${mode} 모드)`;
+          messageEl.className = "message lose";
+        }
+        console.warn("Pi login:", error);
+        return { success: false, error: error?.message || "login failed" };
+      } finally {
+        piLoginBusy = false;
+        if (piLoginBtn && !piConnected) {
+          piLoginBtn.disabled = false;
+          piLoginBtn.textContent = "Pi 로그인 (게스트 → 사용자)";
+        }
+      }
+    }
+
+    /**
+     * usePiPurchase(paymentData) → { pay() }
+     * window.Pi.createPayment 대체 — pay()만 호출
+     */
+    function usePiPurchase(paymentData) {
+      return {
+        async pay() {
+          if (!piService) throw new Error("Pi SDK 준비 중입니다.");
+          await piSdk.ensureReady();
+          const payAuth = await piService.ensurePaymentsAuth();
+          if (!payAuth.success) {
+            throw new Error(payAuth.error || "π 결제를 위해 payments 권한이 필요합니다.");
+          }
+          syncPiConnectionState({
+            accessToken: payAuth.accessToken,
+            user: payAuth.user,
+          });
+          return piService.executeU2APayment(paymentData, payAuth.accessToken);
+        },
+      };
+    }
+
+    /**
+     * usePiAds — window.Pi.Ads 유일 허용 래퍼 (pi-sdk-react 가이드)
+     * UI·이벤트 핸들러에서 window.Pi.Ads 직접 호출 금지
+     */
+    function usePiAds() {
+      function getAdsApi() {
+        return typeof window.Pi !== "undefined" ? window.Pi.Ads : null;
+      }
+      return {
+        get supported() {
+          const ads = getAdsApi();
+          return !!(ads && (typeof ads.showAd === "function" || typeof ads.show === "function"));
+        },
+        async showRewarded(options) {
+          const ads = getAdsApi();
+          if (!ads) return { success: false, skipped: true, reason: "Ads API unavailable" };
+          await piSdk.ensureReady();
+          const fn = ads.showAd || ads.show;
+          if (typeof fn !== "function") {
+            return { success: false, skipped: true, reason: "showAd not supported" };
+          }
+          try {
+            const result = await Promise.resolve(fn.call(ads, options || {}));
+            return { success: true, result };
+          } catch (err) {
+            console.warn("[Pi Ads]", err);
+            return { success: false, error: err?.message || "Ad failed" };
+          }
+        },
+      };
+    }
+
+    window.getPiConnection = getPiConnection;
+    window.connectPi = connectPi;
+    window.usePiPurchase = usePiPurchase;
+    window.usePiAds = usePiAds;
+    window.subscribePiConnection = subscribePiConnection;
 
     /**
      * accessToken 서버 검증 — Pi Platform API /me (백엔드 경유)
@@ -1463,87 +1654,7 @@
     }
 
     async function handlePiLogin(silent) {
-      if (piLoginBusy) return;
-      if (!piService) {
-        if (!silent) {
-          messageEl.textContent = "Pi SDK를 불러오는 중입니다. 잠시 후 다시 시도해 주세요.";
-          messageEl.className = "message";
-        }
-        return;
-      }
-      if (!piSdk.isAvailable()) {
-        if (!silent) {
-          messageEl.innerHTML =
-            "Pi Browser에서 앱을 열어 <strong>Pi 로그인</strong>을 진행해 주세요.";
-          messageEl.className = "message";
-        }
-        updatePiUI(false);
-        return;
-      }
-
-      try {
-        await piSdk.ensureReady();
-      } catch (err) {
-        if (!silent) {
-          messageEl.textContent = err?.message || "Pi SDK 초기화에 실패했습니다. 앱을 새로고침해 주세요.";
-          messageEl.className = "message lose";
-        }
-        return;
-      }
-
-      piLoginBusy = true;
-      if (!silent && piLoginBtn) {
-        piLoginBtn.disabled = true;
-        piLoginBtn.textContent = "연결 중…";
-      }
-
-      try {
-        const result = await Promise.race([
-          piService.login(),
-          new Promise((_, reject) =>
-            setTimeout(
-              () => reject(new Error("연결 시간이 초과되었습니다. 버튼을 다시 눌러 주세요.")),
-              PI_CONNECT_TIMEOUT_MS
-            )
-          ),
-        ]);
-        if (result.success) {
-          piConnected = true;
-          piUser = result.user;
-          piAccessToken = result.accessToken;
-          onPiAuthenticated();
-        } else {
-          piConnected = false;
-          piUser = null;
-          piAccessToken = null;
-          updatePiUI(false);
-          if (!silent) {
-            const mode = isPiSandboxMode() ? "sandbox" : "production";
-            messageEl.textContent =
-              "로그인 실패: " + (result.error || "알 수 없는 오류") + ` (${mode})`;
-            messageEl.className = "message lose";
-          }
-        }
-      } catch (error) {
-        piConnected = false;
-        piUser = null;
-        piAccessToken = null;
-        clearPiSession();
-        updatePiUI(false);
-        if (!silent) {
-          const mode = isPiSandboxMode() ? "sandbox" : "production";
-          const msg = formatPiAuthError(error);
-          messageEl.textContent = `${msg} (${mode} 모드)`;
-          messageEl.className = "message lose";
-        }
-        console.warn("Pi login:", error);
-      } finally {
-        piLoginBusy = false;
-        if (piLoginBtn && !piConnected) {
-          piLoginBtn.disabled = false;
-          piLoginBtn.textContent = "Pi 로그인 (게스트 → 사용자)";
-        }
-      }
+      return connectPi({ silent });
     }
 
     async function initPiSdk() {
@@ -1560,15 +1671,16 @@
         console.warn("initPiSdk:", err);
       }
       piSdkReady = true;
+      syncPiConnectionState({ ready: true });
       const saved = loadPiSession();
       if (saved?.accessToken && piSdk._initDone) {
         try {
           const verifiedUser = await verifyPiAccessToken(saved.accessToken);
-          piConnected = true;
-          piUser = verifiedUser;
-          piAccessToken = saved.accessToken;
-          piService.user = verifiedUser;
-          piService.accessToken = saved.accessToken;
+          syncPiConnectionState({
+            connected: true,
+            user: verifiedUser,
+            accessToken: saved.accessToken,
+          });
           piService.paymentsScopeGranted = !!saved.paymentsScopeGranted;
           await piService.resolveIncompletePayment(saved.accessToken);
           savePiSession({
@@ -1581,6 +1693,7 @@
         } catch (err) {
           console.warn("Pi session re-verify failed:", err);
           clearPiSession();
+          syncPiConnectionState({ connected: false, user: null, accessToken: null });
           updatePiUI(false);
         }
       } else {
@@ -1922,7 +2035,8 @@
 
     async function depositPi() {
       if (spinning || autoMode || piPaymentBusy) return;
-      if (!piConnected || !piAccessToken) {
+      const { connected, accessToken } = getPiConnection();
+      if (!connected || !accessToken) {
         messageEl.innerHTML = "π 입금은 <strong>Pi 로그인</strong> 후 이용할 수 있습니다.";
         messageEl.className = "message lose";
         return;
@@ -1949,17 +2063,7 @@
       messageEl.className = "message";
 
       try {
-        await piSdk.ensureReady();
-        const payAuth = await piService.ensurePaymentsAuth();
-        if (!payAuth.success) {
-          messageEl.textContent = payAuth.error || "π 입금을 위해 payments 권한이 필요합니다.";
-          messageEl.className = "message lose";
-          return;
-        }
-        piAccessToken = payAuth.accessToken || piAccessToken;
-        if (payAuth.user) piUser = payAuth.user;
-
-        await piService.depositU2A({
+        const pay = usePiPurchase({
           amount: piAmount,
           memo: `KRSLOT KR ${krCredit.toLocaleString("ko-KR")} 충전`,
           metadata: {
@@ -1971,6 +2075,7 @@
             username: piUser?.username || null,
           },
         });
+        await pay.pay();
 
         balance += krCredit;
         sessionKrDeposited += krCredit;
