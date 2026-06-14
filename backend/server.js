@@ -8,6 +8,8 @@
  */
 require("dotenv").config();
 
+const fs = require("fs");
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -207,11 +209,25 @@ const paymentLimiter = rateLimit({
 
 app.use("/api/", globalApiLimiter);
 
+/** Pi Developer Portal 도메인 검증 — https://han-xe9x.onrender.com/validation-key.txt */
+const VALIDATION_KEY_PATH = path.join(__dirname, "validation-key.txt");
+app.get("/validation-key.txt", (_req, res) => {
+  try {
+    const key = fs.readFileSync(VALIDATION_KEY_PATH, "utf8").trim();
+    if (!key) {
+      return res.status(404).type("text/plain").send("Not found");
+    }
+    res.type("text/plain; charset=utf-8").send(key);
+  } catch {
+    res.status(404).type("text/plain").send("Not found");
+  }
+});
+
 /** 상태 확인 — LLM 스택 감지용 (프레임워크·결제 경로) */
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    version: "2026-06-13f",
+    version: "2026-06-14a",
     pi: {
       stack: PI_STACK.backend,
       package: PI_STACK.backendPackage,
