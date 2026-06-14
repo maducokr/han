@@ -509,7 +509,7 @@
       width: fit-content;
       max-width: calc(100% - 0.3rem);
       margin: 0.25rem auto 0;
-      min-height: 0;
+      min-height: 2.75rem;
       text-align: center;
       font-size: clamp(0.58rem, 2.5vw, 0.75rem);
       line-height: 1.35;
@@ -2128,13 +2128,12 @@
             });
             piService.accessToken = auth.accessToken;
             piService.user = verifiedUser;
-            /** 자동 복원은 팝업 없음 — payments는 입금·로그인 버튼에서만 확정 */
-            piService.paymentsScopeGranted = false;
+            piService.paymentsScopeGranted = restoreScopes.includes("payments");
             await piService.resolveIncompletePayment(auth.accessToken);
             savePiSession({
               accessToken: auth.accessToken,
               user: verifiedUser,
-              paymentsScopeGranted: false,
+              paymentsScopeGranted: piService.paymentsScopeGranted,
               verifiedAt: Date.now(),
             });
             onPiAuthenticated();
@@ -2505,46 +2504,34 @@
         return;
       }
 
-      let { connected, accessToken } = getPiConnection();
-      /** connected여도 payments 미확정이면 connectPi → Pi.authenticate(팝업 또는 캐시) */
+      const { connected, accessToken } = getPiConnection();
       if (!connected || !accessToken) {
-        messageEl.innerHTML =
-          `π 입금을 위해 <strong>Pi 로그인</strong>이 필요합니다. (${isPiSandboxMode() ? "테스트넷" : "메인넷"})` +
-          "<br><small>팝업에서 <strong>username</strong>·<strong>payments(결제)</strong> 권한을 모두 허용해 주세요.</small>";
-        messageEl.className = "message";
-        const auth = await connectPi({ scopes: PI_AUTH_SCOPES_PAYMENT });
-        if (!auth.success) return;
-        ({ connected, accessToken } = getPiConnection());
-      } else if (!piService?.paymentsScopeGranted) {
-        messageEl.innerHTML =
-          `π 결제 권한 확인 중… (${isPiSandboxMode() ? "테스트넷" : "메인넷"})` +
-          "<br><small>팝업이 안 뜨면 Pi Browser → 앱 권한에서 KRSLOT 권한을 <strong>취소</strong>한 뒤 다시 로그인하세요.</small>";
-        messageEl.className = "message";
-        const auth = await connectPi({ scopes: PI_AUTH_SCOPES_PAYMENT });
-        if (!auth.success) return;
-        ({ connected, accessToken } = getPiConnection());
-      }
-      if (!connected || !accessToken) {
-        messageEl.innerHTML = "π 입금은 <strong>Pi 로그인</strong> 후 이용할 수 있습니다.";
+        messageEl.innerHTML = "π 입금은 <strong>Pi 로그인 (결제 권한 포함)</strong> 후 이용할 수 있습니다.";
         messageEl.className = "message lose";
         return;
       }
-      await warmPiBackend();
-      await warmPiBackendPayments();
+
+      piPaymentBusy = true;
+      updateControls();
+      Sfx.unlock();
+      Sfx.click();
 
       const piAmount = bankPiAmount;
       const krCredit = piToKr(piAmount);
-      Sfx.unlock();
-      Sfx.click();
-      piPaymentBusy = true;
-      updateControls();
-      startPaymentKeepAlive();
+      const sandbox = isPiSandboxMode();
       messageEl.innerHTML =
-        `π 입금 중… <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR</strong>` +
-        `<br><small>네트워크: ${isPiSandboxMode() ? "테스트넷(sandbox)" : "메인넷"}</small>`;
+        `π 입금 준비 중… <strong>${formatPi(piAmount)}</strong> · ${sandbox ? "테스트넷" : "메인넷"}`;
       messageEl.className = "message";
 
       try {
+        await warmPiBackend();
+        await warmPiBackendPayments();
+        startPaymentKeepAlive();
+
+        messageEl.innerHTML =
+          `π 결제 팝업을 확인해 주세요… <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR</strong>`;
+        messageEl.className = "message";
+
         const pay = usePiPurchase({
           amount: piAmount,
           memo: `KRSLOT KR ${krCredit.toLocaleString("ko-KR")} 충전`,
