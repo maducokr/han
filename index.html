@@ -1287,7 +1287,7 @@
             onCancel: () =>
               reject(
                 new Error(
-                  "π 결제가 취소되었습니다. (승인 시간 초과·서버 approve 실패·사용자 취소 중 하나)"
+                  "π 결제 승인 시간이 초과되었거나 취소되었습니다. (서버 approve·Pi Browser 팝업 확인)"
                 )
               ),
             onError: (error) => {
@@ -1507,11 +1507,30 @@
         onReadyForServerApproval: async (paymentId) => {
           const t0 = Date.now();
           try {
-            await warmPiBackend();
-            await postPiU2A("approve", { paymentId, accessToken });
-            console.info("[Pi] approve OK", paymentId, Date.now() - t0, "ms");
+            /* Pi 승인 타임아웃 ~20s — warm·재인증 없이 approve만 즉시 호출 */
+            await postPiU2A("approve", {
+              paymentId,
+              accessToken,
+              sandbox: isPiSandboxMode(),
+            });
+            console.info(
+              "[Pi] approve OK",
+              paymentId,
+              Date.now() - t0,
+              "ms",
+              "sandbox:",
+              isPiSandboxMode()
+            );
           } catch (err) {
-            console.error("[Pi] approve FAIL", paymentId, Date.now() - t0, "ms", err);
+            console.error(
+              "[Pi] approve FAIL",
+              paymentId,
+              Date.now() - t0,
+              "ms",
+              "sandbox:",
+              isPiSandboxMode(),
+              err
+            );
             throw new Error(formatPiPaymentError(err));
           }
         },
@@ -1681,8 +1700,16 @@
         }
       }
 
-      /** π 입금 — 반드시 Pi.authenticate 호출 (캐시·플래그만으로는 createPayment 불가) */
+      /** π 입금 — payments 확보 (depositPi에서 connectPi 후에는 즉시 반환) */
       async ensurePaymentsAuth() {
+        if (
+          this.paymentsScopeGranted &&
+          this.accessToken &&
+          this.user &&
+          piClient.connected
+        ) {
+          return { success: true, accessToken: this.accessToken, user: this.user };
+        }
         return this.login(PI_AUTH_SCOPES_PAYMENT);
       }
 
@@ -2509,7 +2536,9 @@
       piPaymentBusy = true;
       updateControls();
       startPaymentKeepAlive();
-      messageEl.innerHTML = `π 입금 중… <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR</strong>`;
+      messageEl.innerHTML =
+        `π 입금 중… <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR</strong>` +
+        `<br><small>네트워크: ${isPiSandboxMode() ? "테스트넷(sandbox)" : "메인넷"}</small>`;
       messageEl.className = "message";
 
       try {
@@ -2543,9 +2572,13 @@
         if (/payments.*scope|without.*payments|결제 권한/i.test(msg)) {
           hint =
             "<br><small><strong>Pi 로그인</strong> 팝업에서 username·payments(결제) 권한을 모두 허용한 뒤 다시 시도해 주세요.</small>";
-        } else if (/취소|cancel|timeout|만료|expired/i.test(msg)) {
+        } else if (/승인 시간|timeout|만료|expired|approve/i.test(msg)) {
           hint =
-            "<br><small>서버 approve가 20초 내 완료되어야 합니다. Render <strong>PI_SANDBOX_API_KEY</strong>(Testnet) 확인 후 다시 시도하세요.</small>";
+            "<br><small>테스트넷: Pi.init sandbox=<strong>" +
+            isPiSandboxMode() +
+            "</strong> · Render <strong>PI_SANDBOX_API_KEY</strong>(Testnet) 확인. 입금 전 서버가 깨어 있도록 잠시 후 재시도하세요.</small>";
+        } else if (/취소|cancel/i.test(msg)) {
+          hint = "<br><small>Pi Browser 결제 팝업에서 승인했는지 확인해 주세요.</small>";
         } else if (isPiSandboxMode() && /approve|api key|502|503|payment_not_found/i.test(msg)) {
           hint =
             "<br><small>Render <strong>PI_SANDBOX_API_KEY</strong>(Developer Portal Testnet) 확인</small>";
