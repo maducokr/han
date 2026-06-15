@@ -26,6 +26,8 @@ const PORT = Number(process.env.PORT) || 3000;
 const PI_API_KEY = process.env.PI_API_KEY || "";
 const PI_SANDBOX_API_KEY = process.env.PI_SANDBOX_API_KEY || "";
 const PI_WALLET_SEED = process.env.PI_WALLET_SEED || "";
+/** Testnet 앱 지갑 Seed — 미설정 시 PI_WALLET_SEED 사용 (Developer Portal → Testnet Wallet) */
+const PI_SANDBOX_WALLET_SEED = process.env.PI_SANDBOX_WALLET_SEED || "";
 const PI_API_BASE = process.env.PI_API_BASE || "https://api.minepi.com";
 const PI_TO_KR_RATE = 3141590;
 
@@ -73,6 +75,9 @@ function redactSecrets(input) {
   }
   if (PI_WALLET_SEED.length > 8) {
     out = out.split(PI_WALLET_SEED).join("[REDACTED_WALLET_SEED]");
+  }
+  if (PI_SANDBOX_WALLET_SEED.length > 8) {
+    out = out.split(PI_SANDBOX_WALLET_SEED).join("[REDACTED_SANDBOX_WALLET_SEED]");
   }
 
   return out
@@ -132,18 +137,33 @@ async function verifyAccessToken(accessToken) {
   return res.data;
 }
 
-/** pi-backend (A2U: 앱 → 사용자 Pi 지급) — 지갑 시드 설정 시에만 사용 */
-let piNetwork = null;
-function getPiNetwork() {
-  if (!PI_API_KEY || !PI_WALLET_SEED) {
-    throw new Error("Payout service is not configured");
+/** pi-backend (A2U) — sandbox 시 Testnet API Key · Testnet Wallet Seed */
+const piNetworkCache = { main: null, sandbox: null };
+
+function resolvePiCredentials(sandbox = false) {
+  const apiKey = sandbox ? PI_SANDBOX_API_KEY || PI_API_KEY : PI_API_KEY;
+  const walletSeed = sandbox
+    ? PI_SANDBOX_WALLET_SEED || PI_WALLET_SEED
+    : PI_WALLET_SEED;
+  return { apiKey, walletSeed, sandbox: !!sandbox };
+}
+
+function getPiNetwork(sandbox = false) {
+  const { apiKey, walletSeed, sandbox: isSandbox } = resolvePiCredentials(sandbox);
+  if (!apiKey || !walletSeed) {
+    throw new Error(
+      isSandbox
+        ? "Testnet payout not configured (PI_SANDBOX_API_KEY / PI_SANDBOX_WALLET_SEED)"
+        : "Payout service is not configured (PI_API_KEY / PI_WALLET_SEED)"
+    );
   }
-  if (!piNetwork) {
-    piNetwork = new PiNetwork(PI_API_KEY, PI_WALLET_SEED, {
+  const cacheKey = isSandbox ? "sandbox" : "main";
+  if (!piNetworkCache[cacheKey]) {
+    piNetworkCache[cacheKey] = new PiNetwork(apiKey, walletSeed, {
       baseUrl: PI_API_BASE,
     });
   }
-  return piNetwork;
+  return piNetworkCache[cacheKey];
 }
 
 const app = express();
@@ -227,12 +247,13 @@ app.get("/validation-key.txt", (_req, res) => {
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    version: "2026-06-14b",
+    version: "2026-06-15a",
     pi: {
       stack: PI_STACK.backend,
       package: PI_STACK.backendPackage,
       paymentsPath: PI_STACK.paymentsBasePath,
       sandboxKeyConfigured: !!PI_SANDBOX_API_KEY,
+      sandboxWalletConfigured: !!(PI_SANDBOX_WALLET_SEED || PI_WALLET_SEED),
     },
   });
 });
@@ -247,7 +268,7 @@ app.post("/api/pi/verify", verifyLimiter, async (req, res) => {
   if (!accessToken || typeof accessToken !== "string") {
     return res.status(400).json({ success: false, error: "accessToken required" });
   }
-  if (!PI_API_KEY) {
+  if (!PI_API_KEY && !PI_SANDBOX_API_KEY) {
     return res.status(503).json({ success: false, error: "Service unavailable" });
   }
 
@@ -270,9 +291,9 @@ app.post("/api/pi/verify", verifyLimiter, async (req, res) => {
   }
 });
 
-/** pi-sdk-express — sandbox(테스트넷) / production(메인넷) API Key 분리 */
+/** pi-sdk-express — sandbox(테스트넷) / production(메인넷) API Key · Wallet Seed 분리 */
 function getPiExpress(sandbox = false) {
-  const apiKey = sandbox ? PI_SANDBOX_API_KEY || PI_API_KEY : PI_API_KEY;
+  const { apiKey, walletSeed } = resolvePiCredentials(sandbox);
   if (!apiKey) {
     throw new Error(
       sandbox
@@ -282,7 +303,7 @@ function getPiExpress(sandbox = false) {
   }
   return new PiExpress({
     apiKey,
-    walletPrivateSeed: PI_WALLET_SEED,
+    walletPrivateSeed: walletSeed,
     apiBase: PI_API_BASE,
   });
 }
@@ -299,7 +320,7 @@ function createPiPaymentMiddleware() {
   });
 }
 
-if (PI_API_KEY) {
+if (PI_API_KEY || PI_SANDBOX_API_KEY) {
   const piPaymentRouter = createPiPaymentMiddleware();
   app.use(PI_STACK.paymentsBasePath, paymentLimiter, piPaymentRouter);
   app.use(PI_STACK.legacyPaymentsBasePath, paymentLimiter, piPaymentRouter);
@@ -382,13 +403,15 @@ app.post("/api/pi/session/settle", paymentLimiter, async (req, res) => {
 
 /**
  * POST /api/pi/payments/payout
- * A2U: 게임 종료 잔액·상금 → 유저 지갑 π 지급 (pi-backend)
+ * A2U: 당첨·게임종료 → 유저 지갑 π 지급 (pi-backend)
+ * Body: { accessToken, amount, memo, metadata, sandbox?: boolean }
  */
 app.post("/api/pi/payments/payout", paymentLimiter, async (req, res) => {
   const accessToken = req.body?.accessToken;
   const amount = Number(req.body?.amount);
   const memo = req.body?.memo || "KRSLOT prize";
   const metadata = req.body?.metadata || {};
+  const sandbox = !!req.body?.sandbox;
 
   if (!accessToken || !Number.isFinite(amount) || amount <= 0) {
     return res.status(400).json({
@@ -399,7 +422,7 @@ app.post("/api/pi/payments/payout", paymentLimiter, async (req, res) => {
 
   try {
     const me = await verifyAccessToken(accessToken);
-    const pi = getPiNetwork();
+    const pi = getPiNetwork(sandbox);
     const paymentId = await pi.createPayment({
       amount,
       memo,
@@ -408,9 +431,9 @@ app.post("/api/pi/payments/payout", paymentLimiter, async (req, res) => {
     });
     const txid = await pi.submitPayment(paymentId);
     const payment = await pi.completePayment(paymentId, txid);
-    return res.json({ success: true, paymentId, txid, payment });
+    return res.json({ success: true, paymentId, txid, payment, sandbox });
   } catch (err) {
-    safeWarn("[payout]", err.message);
+    safeWarn("[payout]", "sandbox:", sandbox, err.message);
     return res.status(502).json({
       success: false,
       error: publicError(err, "Payout failed"),
@@ -440,7 +463,10 @@ process.on("unhandledRejection", (reason) => {
 
 app.listen(PORT, () => {
   console.log(`KRSLOT backend listening on port ${PORT}`);
-  if (!PI_API_KEY) {
-    console.warn("WARN: PI_API_KEY not set — set it in .env or hosting env vars");
+  if (!PI_API_KEY && !PI_SANDBOX_API_KEY) {
+    console.warn("WARN: PI_API_KEY / PI_SANDBOX_API_KEY not set");
+  }
+  if (PI_SANDBOX_API_KEY && !PI_SANDBOX_WALLET_SEED && !PI_WALLET_SEED) {
+    console.warn("WARN: Testnet payout needs PI_SANDBOX_WALLET_SEED or PI_WALLET_SEED");
   }
 });

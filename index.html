@@ -925,17 +925,19 @@
         const settleRes = await fetch(`${base}/api/pi/session/settle`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({
-            accessToken: piAccessToken,
-            krBalance: balance,
-            krBet: sessionKrBet,
-            krWon: sessionKrWon,
-            krConsumed,
-            rate: PI_TO_KR_RATE,
-            settleType: reason,
-            uid: piUser?.uid || null,
-            username: piUser?.username || null,
-          }),
+          body: JSON.stringify(
+            piApiPayload({
+              accessToken: piAccessToken,
+              krBalance: balance,
+              krBet: sessionKrBet,
+              krWon: sessionKrWon,
+              krConsumed,
+              rate: PI_TO_KR_RATE,
+              settleType: reason,
+              uid: piUser?.uid || null,
+              username: piUser?.username || null,
+            })
+          ),
         });
         const settleData = await settleRes.json().catch(() => ({}));
         if (!settleRes.ok || !settleData.success) {
@@ -996,6 +998,11 @@
       const verify = (window.PI_AUTH_VERIFY_URL || "").trim();
       if (!verify) return "";
       return verify.replace(/\/api\/pi\/verify\/?$/i, "");
+    }
+
+    /** 백엔드 API body — sandbox 플래그 (U2A·A2U·settle 공통) */
+    function piApiPayload(fields) {
+      return { ...fields, sandbox: isPiSandboxMode() };
     }
 
     /**
@@ -2600,20 +2607,22 @@
         const res = await fetch(`${base}/api/pi/payments/payout`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({
-            accessToken: piAccessToken,
-            amount: piAmount,
-            memo: `KRSLOT 당첨 ${Math.floor(krAmount).toLocaleString("ko-KR")} KR`,
-            metadata: {
-              type: "win_payout",
-              krAmount: Math.floor(krAmount),
-              piAmount,
-              rate: PI_TO_KR_RATE,
-              uid: piUser?.uid || null,
-              username: piUser?.username || null,
-              ...winMeta,
-            },
-          }),
+          body: JSON.stringify(
+            piApiPayload({
+              accessToken: piAccessToken,
+              amount: piAmount,
+              memo: `KRSLOT 당첨 ${Math.floor(krAmount).toLocaleString("ko-KR")} KR`,
+              metadata: {
+                type: "win_payout",
+                krAmount: Math.floor(krAmount),
+                piAmount,
+                rate: PI_TO_KR_RATE,
+                uid: piUser?.uid || null,
+                username: piUser?.username || null,
+                ...winMeta,
+              },
+            })
+          ),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.success) {
@@ -2669,17 +2678,19 @@
           const settleRes = await fetch(`${base}/api/pi/session/settle`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Accept: "application/json" },
-            body: JSON.stringify({
-              accessToken: piAccessToken,
-              krBalance,
-              krBet: sessionKrBet,
-              krWon: sessionKrWon,
-              krConsumed,
-              rate: PI_TO_KR_RATE,
-              settleType: "cashout",
-              uid: piUser?.uid || null,
-              username: piUser?.username || null,
-            }),
+            body: JSON.stringify(
+              piApiPayload({
+                accessToken: piAccessToken,
+                krBalance,
+                krBet: sessionKrBet,
+                krWon: sessionKrWon,
+                krConsumed,
+                rate: PI_TO_KR_RATE,
+                settleType: "cashout",
+                uid: piUser?.uid || null,
+                username: piUser?.username || null,
+              })
+            ),
           });
           const settleData = await settleRes.json().catch(() => ({}));
           if (!settleRes.ok || !settleData.success) {
@@ -2692,22 +2703,24 @@
         const payoutRes = await fetch(`${base}/api/pi/payments/payout`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({
-            accessToken: piAccessToken,
-            amount: piAmount,
-            memo: `KRSLOT 게임종료 ${krBalance.toLocaleString("ko-KR")} KR 환급`,
-            metadata: {
-              type: "cashout",
-              krBalance,
-              krBet: sessionKrBet,
-              krWon: sessionKrWon,
-              krConsumed,
-              piAmount,
-              rate: PI_TO_KR_RATE,
-              uid: piUser?.uid || null,
-              username: piUser?.username || null,
-            },
-          }),
+          body: JSON.stringify(
+            piApiPayload({
+              accessToken: piAccessToken,
+              amount: piAmount,
+              memo: `KRSLOT 게임종료 ${krBalance.toLocaleString("ko-KR")} KR 환급`,
+              metadata: {
+                type: "cashout",
+                krBalance,
+                krBet: sessionKrBet,
+                krWon: sessionKrWon,
+                krConsumed,
+                piAmount,
+                rate: PI_TO_KR_RATE,
+                uid: piUser?.uid || null,
+                username: piUser?.username || null,
+              },
+            })
+          ),
         });
         const payoutData = await payoutRes.json().catch(() => ({}));
         if (!payoutRes.ok || !payoutData.success) {
