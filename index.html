@@ -745,7 +745,7 @@
       </div>
     </div>
     <div class="bank-row">
-      <span class="bank-label status-pill">입·출금 π 선택 <small>(1π = 3,141,590 KR)</small></span>
+      <span class="bank-label status-pill">π 스테이킹 금액 <small>(1π = 3,141,590 KR · KR 소진 시 재입금)</small></span>
       <div class="bank-presets-row">
         <button type="button" class="bank-preset active" data-pi="0.01">0.01 π</button>
         <button type="button" class="bank-preset" data-pi="0.1">0.1 π</button>
@@ -753,12 +753,12 @@
         <button type="button" class="bank-preset" data-pi="5">5 π</button>
       </div>
       <div class="bank-actions-row">
-        <button type="button" class="deposit-btn" id="depositBtn">π 입금</button>
+        <button type="button" class="deposit-btn" id="depositBtn">π 스테이킹 · KR 받기</button>
         <button type="button" class="withdraw-btn" id="withdrawBtn">게임 종료 · π 출금</button>
         <button type="button" class="free-btn" id="freeBtn">FREE</button>
       </div>
     </div>
-    <p class="message" id="message">일치 시 고정 상금 — 두꺼비 <strong>100만</strong> · 섬 <strong>50만</strong> · 자모 <strong>30만 KR</strong> → <strong>π 지갑</strong> 입금</p>
+    <p class="message" id="message">π 스테이킹 → KR로 플레이 · STOP/게임 종료 시 잔액·당첨 KR → <strong>본인 π 지갑</strong> · KR 소진 시 재스테이킹</p>
     </div>
 
     <div class="pi-bar" id="piPlayRow" hidden>
@@ -879,13 +879,24 @@
       if (key) sessionStorage.setItem(key, "1");
     }
 
-    /** π 입금 이력 여부 (Pi Browser에서 플레이 조건) */
-    function hasPiDeposited() {
-      if (!isPiBrowserEnv()) return true;
-      if (!piConnected) return false;
+    function clearPiDepositedFlag() {
       const key = getPiDepositFlagKey();
-      if (key && sessionStorage.getItem(key) === "1") return true;
-      return sessionKrDeposited > 0 || balance > 0;
+      if (key) sessionStorage.removeItem(key);
+    }
+
+    /** Pi Browser: KR 소진 후 π 스테이킹 입금만 허용 */
+    function isStakeDepositAllowed() {
+      if (!isPiBrowserEnv()) return true;
+      return balance <= 0;
+    }
+
+    function getMinBetKr() {
+      let min = 5;
+      document.querySelectorAll(".bet-btn").forEach((b) => {
+        const n = Number(b.dataset.bet);
+        if (n > 0) min = Math.min(min, n);
+      });
+      return min;
     }
 
     /** 세션 중 유저가 지불한 베팅 KR 합계 → 제작자 지갑 정산 대상 (당첨 π는 별도 지급) */
@@ -964,26 +975,200 @@
       }
     }
 
-    /** STOP·AUTO 종료 시 베팅 KR → 제작자 지갑 정산 */
-    async function onGameStopSettle() {
-      if (spinning || piPaymentBusy || getSessionKrConsumed() <= 0) return;
-      const result = await settleSessionToDeveloper({ reason: "stop" });
-      if (result.success && !result.skipped && result.krConsumed > 0) {
-        messageEl.innerHTML =
-          `정산 완료 · 베팅 <strong>${result.krConsumed.toLocaleString("ko-KR")} KR</strong> → ` +
-          `제작자 지갑 <strong>${formatPi(result.housePi)}</strong> 입금`;
-        messageEl.className = "message win";
-        Sfx.deposit();
-      } else if (!result.success && result.error && result.error !== "busy") {
-        messageEl.innerHTML = `제작자 지갑 정산 실패: ${result.error}`;
-        messageEl.className = "message lose";
+    /**
+     * STOP·게임종료 시 KR 잔액(당첨금 포함) → π 본인 지갑 A2U
+     * 베팅 KR은 제작자 지갑 정산(settle) 후 payout
+     */
+    async function payoutSessionKrToUserWallet(options = {}) {
+      const reason = options.reason || "cashout";
+      const silent = !!options.silent;
+
+      if (spinning || piPaymentBusy) {
+        return { success: false, error: "busy" };
       }
+      if (!isPiBrowserEnv() || !piConnected || !piAccessToken) {
+        return { success: false, skipped: true };
+      }
+      const base = getPiBackendBase();
+      if (!base) {
+        if (!silent) {
+          messageEl.innerHTML = "백엔드 URL이 설정되지 않았습니다.";
+          messageEl.className = "message lose";
+        }
+        return { success: false, error: "no backend" };
+      }
+
+      const krBalance = balance;
+      const krConsumed = getSessionKrConsumed();
+      const krWonSnapshot = sessionKrWon;
+      const piAmount = krToPiAmount(krBalance);
+
+      if (krBalance <= 0) {
+        if (krConsumed > 0) {
+          return settleSessionToDeveloper({ reason, silent });
+        }
+        return { success: true, skipped: true };
+      }
+      if (piAmount <= 0) {
+        if (!silent) {
+          messageEl.innerHTML = "π로 환산할 KR 잔액이 없습니다.";
+          messageEl.className = "message lose";
+        }
+        return { success: false, error: "pi amount zero" };
+      }
+
+      if (!silent) {
+        Sfx.unlock();
+        Sfx.click();
+      }
+      piPaymentBusy = true;
+      updateControls();
+      if (!silent) {
+        const winHint =
+          krWonSnapshot > 0
+            ? ` (당첨 <strong>${krWonSnapshot.toLocaleString("ko-KR")} KR</strong> 포함)`
+            : "";
+        messageEl.innerHTML =
+          `게임 종료 처리 중… 잔액 <strong>${krBalance.toLocaleString("ko-KR")} KR</strong>${winHint} → ` +
+          `<strong>${formatPi(piAmount)}</strong> · 본인 Pi 지갑 입금`;
+        messageEl.className = "message";
+      }
+
+      try {
+        if (krConsumed > 0) {
+          const settleRes = await fetch(`${base}/api/pi/session/settle`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify(
+              piApiPayload({
+                accessToken: piAccessToken,
+                krBalance,
+                krBet: sessionKrBet,
+                krWon: krWonSnapshot,
+                krConsumed,
+                rate: PI_TO_KR_RATE,
+                settleType: reason,
+                uid: piUser?.uid || null,
+                username: piUser?.username || null,
+              })
+            ),
+          });
+          const settleData = await settleRes.json().catch(() => ({}));
+          if (!settleRes.ok || !settleData.success) {
+            throw new Error(settleData.error || "게임 정산(제작자 지갑)에 실패했습니다.");
+          }
+          sessionKrBet = 0;
+        }
+
+        const payoutRes = await fetch(`${base}/api/pi/payments/payout`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(
+            piApiPayload({
+              accessToken: piAccessToken,
+              amount: piAmount,
+              memo: `KRSLOT ${reason === "stop" ? "STOP" : "게임종료"} ${krBalance.toLocaleString("ko-KR")} KR → π`,
+              metadata: {
+                type: reason === "stop" ? "stop_payout" : "cashout",
+                krBalance,
+                krBet: sessionKrBet,
+                krWon: krWonSnapshot,
+                krConsumed,
+                piAmount,
+                rate: PI_TO_KR_RATE,
+                uid: piUser?.uid || null,
+                username: piUser?.username || null,
+              },
+            })
+          ),
+        });
+        const payoutData = await payoutRes.json().catch(() => ({}));
+        if (!payoutRes.ok || !payoutData.success) {
+          throw new Error(payoutData.error || "π 출금(유저 지갑)에 실패했습니다.");
+        }
+
+        balance = 0;
+        krSessionEnded = true;
+        clearPiDepositedFlag();
+        resetGameSession();
+        saveBalance();
+        updateHud();
+        if (!silent) Sfx.withdraw();
+
+        const settleNote =
+          krConsumed > 0
+            ? `<br><small>베팅 ${krConsumed.toLocaleString("ko-KR")} KR → 제작자 지갑 ${formatPi(krToPiAmount(krConsumed))}</small>`
+            : "";
+        const winNote =
+          krWonSnapshot > 0
+            ? `<br><small>당첨금 ${krWonSnapshot.toLocaleString("ko-KR")} KR 포함 · 본인 π 지갑 입금</small>`
+            : "";
+
+        if (!silent) {
+          const label = reason === "stop" ? "STOP" : "게임 종료";
+          messageEl.innerHTML =
+            `${label} · <strong>${formatPi(piAmount)}</strong>이 본인 Pi 지갑으로 입금되었습니다.${winNote}${settleNote}`;
+          messageEl.className = "message win";
+        }
+
+        return {
+          success: true,
+          piAmount,
+          krBalance,
+          krConsumed,
+          krWon: krWonSnapshot,
+        };
+      } catch (err) {
+        if (!silent) {
+          messageEl.textContent = err?.message || "KR → π 환급에 실패했습니다.";
+          messageEl.className = "message lose";
+          Sfx.lose();
+        }
+        console.warn("payoutSessionKrToUserWallet:", err);
+        return { success: false, error: err?.message || "payout error" };
+      } finally {
+        piPaymentBusy = false;
+        updateControls();
+      }
+    }
+
+    /** STOP·AUTO 종료 시 KR 잔액(당첨 포함) → π 본인 지갑 */
+    async function onGameStopSettle() {
+      if (spinning || piPaymentBusy) return;
+      if (!isPiBrowserEnv() || !piConnected) return;
+      await payoutSessionKrToUserWallet({ reason: "stop", silent: false });
     }
 
     function resetGameSession() {
       sessionKrBet = 0;
       sessionKrWon = 0;
       sessionKrDeposited = 0;
+      sessionPiStaked = 0;
+    }
+
+    /** KR 소진 · 최소 베팅 미만 잔액 → 세션 종료, π 스테이킹만 허용 */
+    async function onKrSessionDepleted() {
+      if (!isPiBrowserEnv() || !piConnected || krSessionEnded) return;
+      krSessionEnded = true;
+      clearPiDepositedFlag();
+      if (getSessionKrConsumed() > 0) {
+        await settleSessionToDeveloper({ reason: "depleted", silent: false });
+      }
+      resetGameSession();
+      saveBalance();
+      updateHud();
+      if (autoMode) stopAuto(null);
+      messageEl.innerHTML =
+        `KR이 모두 소진되었습니다. <strong>π 스테이킹 입금</strong>으로 새 세션을 시작하세요. (1π = 3,141,590 KR)`;
+      messageEl.className = "message lose";
+      updateControls();
+    }
+
+    async function checkKrSessionEnd() {
+      if (!isPiBrowserEnv() || !piConnected || krSessionEnded) return;
+      if (balance <= 0) {
+        await onKrSessionDepleted();
+      }
     }
 
     function formatPi(piAmount) {
@@ -2026,19 +2211,23 @@
       return isPiBrowserEnv();
     }
 
-    /** Pi Browser: π 입금·로그인 후에만 플레이 / 일반 브라우저: 데모 허용 */
+    /** Pi Browser: π 스테이킹 KR 잔액으로만 플레이 / 일반 브라우저: 데모 허용 */
     function isPlayAllowed() {
       if (!isPiBrowserEnv()) return true;
       if (!piConnected) return false;
-      if (!hasPiDeposited()) return false;
-      return true;
+      if (krSessionEnded || balance <= 0) return false;
+      return balance >= bet;
     }
 
     function getPlayBlockMessage() {
       if (!isPiBrowserEnv()) return "";
       if (!piConnected) return "Pi Browser에서 <strong>Pi 로그인</strong> 후 플레이할 수 있습니다.";
-      if (!hasPiDeposited()) return "<strong>π 입금</strong> 후 게임을 시작할 수 있습니다. (1π = 3,141,590 KR)";
-      if (balance < bet) return `${COIN} 잔액이 부족합니다. π 입금 또는 베팅 금액을 낮춰 주세요.`;
+      if (balance <= 0 || krSessionEnded) {
+        return "KR이 모두 소진되었습니다. <strong>π 스테이킹 입금</strong> 후 게임을 시작하세요. (1π = 3,141,590 KR)";
+      }
+      if (balance < bet) {
+        return `${COIN} 잔액이 부족합니다. 베팅 금액을 낮추거나 <strong>STOP · 게임 종료</strong>로 π 환급하세요. (보유 ${balance.toLocaleString("ko-KR")} ${COIN})`;
+      }
       return "";
     }
 
@@ -2075,6 +2264,7 @@
 
     function onPiAuthenticated() {
       balance = loadBalance();
+      krSessionEnded = isPiBrowserEnv() && balance <= 0;
       updatePiUI(true);
       updateHud();
       updateControls();
@@ -2448,6 +2638,8 @@
     let sessionKrBet = 0;
     let sessionKrWon = 0;
     let sessionKrDeposited = 0;
+    let sessionPiStaked = 0;
+    let krSessionEnded = false;
     let spinning = false;
     let autoMode = false;
     let stopRequested = false;
@@ -2481,10 +2673,13 @@
       autoBtn.classList.toggle("active", autoMode);
       stopBtn.disabled = !autoMode && !spinning;
       const canPiPay = piConnected && !!getPiBackendBase() && isPiBrowserEnv();
-      /** 입금은 π 입금 전에도 가능해야 함 (isPlayAllowed는 입금 완료를 요구 → 순환) */
-      depositBtn.disabled = spinning || autoMode || piPaymentBusy || !canPiPay;
-      withdrawBtn.disabled =
-        playLocked || spinning || autoMode || piPaymentBusy || !canPiPay || balance <= 0;
+      const stakeAllowed = isStakeDepositAllowed();
+      depositBtn.disabled =
+        spinning || autoMode || piPaymentBusy || !canPiPay || !stakeAllowed;
+      if (withdrawBtn) {
+        withdrawBtn.disabled =
+          spinning || autoMode || piPaymentBusy || !canPiPay || balance <= 0;
+      }
       if (freeBtn) {
         freeBtn.hidden = isPiBrowserEnv();
         freeBtn.disabled = playLocked || spinning || autoMode || isPiBrowserEnv();
@@ -2527,7 +2722,7 @@
       const krCredit = piToKr(piAmount);
       const sandbox = isPiSandboxMode();
       messageEl.innerHTML =
-        `π 입금 준비 중… <strong>${formatPi(piAmount)}</strong> · ${sandbox ? "테스트넷" : "메인넷"}`;
+        `π 스테이킹 준비 중… <strong>${formatPi(piAmount)}</strong> · ${sandbox ? "테스트넷" : "메인넷"}`;
       messageEl.className = "message";
 
       try {
@@ -2536,14 +2731,14 @@
         startPaymentKeepAlive();
 
         messageEl.innerHTML =
-          `π 결제 팝업을 확인해 주세요… <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR</strong>`;
+          `지갑에서 π 스테이킹을 확인해 주세요… <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR</strong>`;
         messageEl.className = "message";
 
         const pay = usePiPurchase({
           amount: piAmount,
-          memo: `KRSLOT KR ${krCredit.toLocaleString("ko-KR")} 충전`,
+          memo: `KRSLOT π 스테이킹 → ${krCredit.toLocaleString("ko-KR")} KR`,
           metadata: {
-            type: "deposit",
+            type: "stake",
             piAmount,
             krAmount: krCredit,
             rate: PI_TO_KR_RATE,
@@ -2553,15 +2748,19 @@
         });
         await pay.pay();
 
-        balance += krCredit;
-        sessionKrDeposited += krCredit;
+        resetGameSession();
+        balance = krCredit;
+        sessionKrDeposited = krCredit;
+        sessionPiStaked = piAmount;
+        krSessionEnded = false;
         markPiDeposited();
+        saveBalance();
         updateHud();
         updateControls();
         Sfx.deposit();
         messageEl.innerHTML =
-          `π 입금 완료 · <strong>+${formatPi(piAmount)}</strong> → <strong>+${krCredit.toLocaleString("ko-KR")} KR</strong> ` +
-          `(보유 ${balance.toLocaleString("ko-KR")} KR) — 이제 게임을 시작할 수 있습니다.`;
+          `π 스테이킹 완료 · <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR</strong> ` +
+          `(보유 ${balance.toLocaleString("ko-KR")} KR) — KR을 모두 사용할 때까지 플레이할 수 있습니다.`;
         messageEl.className = "message win";
       } catch (err) {
         const msg = formatPiPaymentError(err);
@@ -2591,162 +2790,21 @@
       }
     }
 
-    /**
-     * 당첨금 KR → π 변환 후 유저 Pi 지갑 A2U 입금
-     */
-    async function payWinPi(krAmount, winMeta) {
-      const base = getPiBackendBase();
-      if (!base || !piAccessToken) {
-        return { success: false, skipped: true };
-      }
-      const piAmount = krToPiAmount(krAmount);
-      if (piAmount <= 0) {
-        return { success: false, error: "π 환산 금액이 없습니다." };
-      }
-      try {
-        const res = await fetch(`${base}/api/pi/payments/payout`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(
-            piApiPayload({
-              accessToken: piAccessToken,
-              amount: piAmount,
-              memo: `KRSLOT 당첨 ${Math.floor(krAmount).toLocaleString("ko-KR")} KR`,
-              metadata: {
-                type: "win_payout",
-                krAmount: Math.floor(krAmount),
-                piAmount,
-                rate: PI_TO_KR_RATE,
-                uid: piUser?.uid || null,
-                username: piUser?.username || null,
-                ...winMeta,
-              },
-            })
-          ),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.success) {
-          throw new Error(data.error || "π 당첨 지급에 실패했습니다.");
-        }
-        return { success: true, piAmount, paymentId: data.paymentId, txid: data.txid };
-      } catch (err) {
-        console.warn("payWinPi:", err);
-        return { success: false, error: err?.message || "π 당첨 지급 오류" };
-      }
-    }
-
-    /**
-     * 게임 종료 · 전액 π 출금
-     * 1) 세션 소모 KR → 제작자 지갑 정산 (서버 settle)
-     * 2) 잔액+당첨금 합산 KR → 유저 지갑 π 지급 (payout)
-     */
+    /** 게임 종료 버튼 — KR 잔액(당첨 포함) → π 본인 지갑 */
     async function cashOutGamePi() {
       if (spinning || autoMode || piPaymentBusy) return;
       if (autoMode) stopAuto(null);
       if (!piConnected || !piAccessToken) {
-        messageEl.innerHTML = "π 출금은 <strong>Pi 로그인</strong> 후 이용할 수 있습니다.";
+        messageEl.innerHTML = "π 환급은 <strong>Pi 로그인</strong> 후 이용할 수 있습니다.";
         messageEl.className = "message lose";
         return;
       }
-      const base = getPiBackendBase();
-      if (!base) {
-        messageEl.innerHTML = "백엔드 URL이 설정되지 않았습니다.";
+      if (balance <= 0) {
+        messageEl.innerHTML = "환급할 KR 잔액이 없습니다.";
         messageEl.className = "message lose";
         return;
       }
-
-      const krBalance = balance;
-      const krConsumed = getSessionKrConsumed();
-      const piAmount = krToPiAmount(krBalance);
-      if (krBalance <= 0 || piAmount <= 0) {
-        messageEl.innerHTML = "출금할 KR 잔액이 없습니다.";
-        messageEl.className = "message lose";
-        return;
-      }
-
-      Sfx.unlock();
-      Sfx.click();
-      piPaymentBusy = true;
-      updateControls();
-      messageEl.innerHTML =
-        `게임 종료 처리 중… 잔액 <strong>${krBalance.toLocaleString("ko-KR")} KR</strong> → <strong>${formatPi(piAmount)}</strong>`;
-      messageEl.className = "message";
-
-      try {
-        const krConsumed = getSessionKrConsumed();
-        if (krConsumed > 0) {
-          const settleRes = await fetch(`${base}/api/pi/session/settle`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Accept: "application/json" },
-            body: JSON.stringify(
-              piApiPayload({
-                accessToken: piAccessToken,
-                krBalance,
-                krBet: sessionKrBet,
-                krWon: sessionKrWon,
-                krConsumed,
-                rate: PI_TO_KR_RATE,
-                settleType: "cashout",
-                uid: piUser?.uid || null,
-                username: piUser?.username || null,
-              })
-            ),
-          });
-          const settleData = await settleRes.json().catch(() => ({}));
-          if (!settleRes.ok || !settleData.success) {
-            throw new Error(settleData.error || "게임 정산(제작자 지갑)에 실패했습니다.");
-          }
-          sessionKrBet = 0;
-          sessionKrWon = 0;
-        }
-
-        const payoutRes = await fetch(`${base}/api/pi/payments/payout`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(
-            piApiPayload({
-              accessToken: piAccessToken,
-              amount: piAmount,
-              memo: `KRSLOT 게임종료 ${krBalance.toLocaleString("ko-KR")} KR 환급`,
-              metadata: {
-                type: "cashout",
-                krBalance,
-                krBet: sessionKrBet,
-                krWon: sessionKrWon,
-                krConsumed,
-                piAmount,
-                rate: PI_TO_KR_RATE,
-                uid: piUser?.uid || null,
-                username: piUser?.username || null,
-              },
-            })
-          ),
-        });
-        const payoutData = await payoutRes.json().catch(() => ({}));
-        if (!payoutRes.ok || !payoutData.success) {
-          throw new Error(payoutData.error || "π 출금(유저 지갑)에 실패했습니다.");
-        }
-
-        balance = 0;
-        resetGameSession();
-        updateHud();
-        Sfx.withdraw();
-        const settleNote =
-          krConsumed > 0
-            ? `<br><small>베팅 ${krConsumed.toLocaleString("ko-KR")} KR → 제작자 지갑 ${formatPi(krToPiAmount(krConsumed))}</small>`
-            : "";
-        messageEl.innerHTML =
-          `게임 종료 · <strong>${formatPi(piAmount)}</strong>이 유저 지갑으로 입금되었습니다.${settleNote}`;
-        messageEl.className = "message win";
-      } catch (err) {
-        messageEl.textContent = err?.message || "게임 종료·π 출금에 실패했습니다.";
-        messageEl.className = "message lose";
-        Sfx.lose();
-        console.warn("Pi cashout:", err);
-      } finally {
-        piPaymentBusy = false;
-        updateControls();
-      }
+      await payoutSessionKrToUserWallet({ reason: "cashout", silent: false });
     }
 
     function claimFreeKr() {
@@ -2762,7 +2820,7 @@
       messageEl.className = "message win";
     }
 
-    function stopAuto(reason) {
+    async function stopAuto(reason) {
       stopRequested = true;
       autoMode = false;
       speechSynthesis?.cancel();
@@ -2771,7 +2829,7 @@
       if (!spinning && reason) {
         messageEl.innerHTML = reason;
         messageEl.className = "message";
-        onGameStopSettle();
+        await onGameStopSettle();
       }
     }
 
@@ -3007,52 +3065,17 @@
 
         if (payout > 0) {
           sessionKrWon += payout;
+          balance += payout;
           const pron = getPronunciation(sym);
           const times = pronounceTimes || PRONOUNCE_TIMES;
           machineEl.classList.add("winning");
           gameFrameEl.classList.add("winning");
           Sfx.winBig();
-
-          const usePiPayout =
-            isPiBrowserEnv() && piConnected && piAccessToken && getPiBackendBase();
-
-          if (usePiPayout) {
-            piPaymentBusy = true;
-            updateControls();
-            messageEl.innerHTML =
-              `당첨! <strong>${payout.toLocaleString("ko-KR")} KR</strong> → π 지갑 입금 중…<br>` +
-              `<small>${desc}</small>`;
-            messageEl.className = "message win";
-
-            const payResult = await payWinPi(payout, {
-              desc,
-              symbolId: sym?.id || sym?.char || null,
-              symbolLabel: sym?.label || sym?.char || null,
-            });
-            piPaymentBusy = false;
-
-            if (payResult.success) {
-              setLastWin(payout);
-              messageEl.innerHTML =
-                `당첨! <strong>+${formatPi(payResult.piAmount)}</strong> π 지갑 입금 완료<br>` +
-                `<small>${desc}</small><br>` +
-                `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
-            } else {
-              balance += payout;
-              setLastWin(payout);
-              messageEl.innerHTML =
-                `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> (π 입금 실패 → KR 잔액)<br>` +
-                `<small>${payResult.error || "지급 오류"} · ${desc}</small><br>` +
-                `<small>「${pron}」 발음 ${times}회 재생 중…</small>`;
-            }
-          } else {
-            balance += payout;
-            setLastWin(payout);
-            messageEl.innerHTML =
-              `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> — ${desc}<br>` +
-              `<small>「${pron}」 발음 ${times}회 · (데모: ≈ ${formatPi(piAmount || krToPiAmount(payout))})</small>`;
-            messageEl.className = "message win";
-          }
+          setLastWin(payout);
+          messageEl.innerHTML =
+            `당첨! <strong>+${payout.toLocaleString("ko-KR")} ${COIN}</strong> — ${desc}<br>` +
+            `<small>「${pron}」 발음 ${times}회 · STOP/게임 종료 시 π 지갑으로 환급 (보유 ${balance.toLocaleString("ko-KR")} ${COIN})</small>`;
+          messageEl.className = "message win";
 
           if (!stopRequested) await pronounceNTimes(sym, times);
           if (stopRequested) speechSynthesis?.cancel();
@@ -3073,11 +3096,13 @@
         updateControls();
       }
 
+      await checkKrSessionEnd();
+
       if (stopRequested && !autoMode) {
         await onGameStopSettle();
       }
 
-      if (autoMode && !stopRequested) scheduleNextAuto();
+      if (autoMode && !stopRequested && isPlayAllowed()) scheduleNextAuto();
     }
 
     spinBtn.addEventListener("click", () => {
@@ -3096,13 +3121,12 @@
 
     autoBtn.addEventListener("click", startAuto);
 
-    stopBtn.addEventListener("click", async () => {
+    stopBtn.addEventListener("click", () => {
       if (!autoMode && !spinning) return;
       const wasAuto = autoMode;
       stopAuto(
         wasAuto ? "STOP — 자동 스핀을 중지했습니다." : "STOP — 진행 중인 동작을 중지했습니다."
       );
-      if (!spinning) await onGameStopSettle();
     });
 
     const soundToggle = document.getElementById("soundToggle");
