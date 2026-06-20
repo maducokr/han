@@ -758,7 +758,7 @@
         <button type="button" class="free-btn" id="freeBtn">FREE</button>
       </div>
     </div>
-    <p class="message" id="message">π 스테이킹 → KR로 플레이 · STOP/게임 종료 시 잔액·당첨 KR → <strong>본인 π 지갑</strong> · KR 소진 시 재스테이킹</p>
+    <p class="message" id="message">Pi 로그인 → 선택 금액 π 스테이킹 → <strong>KR CASH</strong>로 플레이 · STOP/게임 종료 시 π 환급</p>
     </div>
 
     <div class="pi-bar" id="piPlayRow" hidden>
@@ -882,6 +882,13 @@
     function clearPiDepositedFlag() {
       const key = getPiDepositFlagKey();
       if (key) sessionStorage.removeItem(key);
+    }
+
+    /** Pi Browser: KR CASH 세션 활성 (스테이킹 완료) */
+    function hasActiveKrSession() {
+      if (!isPiBrowserEnv()) return true;
+      if (!piConnected) return false;
+      return !krSessionEnded && balance > 0;
     }
 
     /** Pi Browser: KR 소진 후 π 스테이킹 입금만 허용 */
@@ -2021,7 +2028,7 @@
             user: result.user,
             accessToken: result.accessToken,
           });
-          onPiAuthenticated();
+          await onPiAuthenticated();
           return result;
         }
         syncPiConnectionState({ connected: false, user: null, accessToken: null });
@@ -2211,11 +2218,10 @@
       return isPiBrowserEnv();
     }
 
-    /** Pi Browser: π 스테이킹 KR 잔액으로만 플레이 / 일반 브라우저: 데모 허용 */
+    /** Pi Browser: KR CASH 세션 + 베팅 가능 시 플레이 / 일반 브라우저: 데모 허용 */
     function isPlayAllowed() {
       if (!isPiBrowserEnv()) return true;
-      if (!piConnected) return false;
-      if (krSessionEnded || balance <= 0) return false;
+      if (!hasActiveKrSession()) return false;
       return balance >= bet;
     }
 
@@ -2262,7 +2268,7 @@
       }
     }
 
-    function onPiAuthenticated() {
+    async function onPiAuthenticated() {
       balance = loadBalance();
       krSessionEnded = isPiBrowserEnv() && balance <= 0;
       updatePiUI(true);
@@ -2271,6 +2277,38 @@
       warmPiBackend().catch(() => {});
       const name = piUser?.username ? `@${piUser.username}` : "Pi 사용자";
       const uidHint = piUser?.uid ? `<br><small>UID: ${piUser.uid}</small>` : "";
+
+      if (
+        isPiBrowserEnv() &&
+        piAccessToken &&
+        getPiBackendBase() &&
+        isStakeDepositAllowed() &&
+        piClient.canPay()
+      ) {
+        messageEl.innerHTML =
+          `Pi 인증 완료 · <strong>${name}</strong>님 · ` +
+          `<strong>${formatPi(bankPiAmount)}</strong> 스테이킹 API 호출 중…${uidHint}`;
+        messageEl.className = "message";
+        const result = await stakePi({ auto: true });
+        if (result?.success) {
+          messageEl.innerHTML =
+            `스테이킹 완료 · <strong>${formatPi(result.stake.piAmount)}</strong> → ` +
+            `<strong>${balance.toLocaleString("ko-KR")} KR CASH</strong> — SPIN · AUTO · 베팅 변경 가능${uidHint}`;
+          messageEl.className = "message win";
+        } else if (result?.cancelled) {
+          messageEl.innerHTML =
+            `Pi 인증 완료 · 스테이킹이 취소되었습니다.${uidHint}<br>` +
+            `금액 선택 후 <strong>π 스테이킹 · KR 받기</strong>를 눌러 게임을 시작하세요.`;
+          messageEl.className = "message lose";
+        } else if (!result?.skipped) {
+          messageEl.innerHTML =
+            `Pi 인증 완료 · <strong>${name}</strong>님${uidHint}<br>` +
+            `<strong>π 스테이킹 · KR 받기</strong> 버튼으로 스테이킹 후 게임을 시작하세요.`;
+          messageEl.className = "message lose";
+        }
+        return;
+      }
+
       const playHint = getPlayBlockMessage();
       if (playHint) {
         messageEl.innerHTML = `Pi 인증 완료 · <strong>${name}</strong>님 환영합니다!${uidHint}<br>${playHint}`;
@@ -2333,7 +2371,7 @@
               paymentsScopeGranted: piService.paymentsScopeGranted,
               verifiedAt: Date.now(),
             });
-            onPiAuthenticated();
+            await onPiAuthenticated();
           } catch (err) {
             console.warn("Pi session re-verify failed:", err);
             clearPiSession();
@@ -2666,10 +2704,11 @@
     }
 
     function updateControls() {
-      const playLocked = !isPlayAllowed();
+      const sessionActive = hasActiveKrSession();
       const afford = canAffordSpin();
-      spinBtn.disabled = playLocked || spinning || autoMode || !afford;
-      autoBtn.disabled = playLocked || spinning || autoMode || !afford;
+      const playLocked = !isPlayAllowed();
+      spinBtn.disabled = !sessionActive || spinning || autoMode || !afford;
+      autoBtn.disabled = !sessionActive || spinning || autoMode || !afford;
       autoBtn.classList.toggle("active", autoMode);
       stopBtn.disabled = !autoMode && !spinning;
       const canPiPay = piConnected && !!getPiBackendBase() && isPiBrowserEnv();
@@ -2678,61 +2717,128 @@
         spinning || autoMode || piPaymentBusy || !canPiPay || !stakeAllowed;
       if (withdrawBtn) {
         withdrawBtn.disabled =
-          spinning || autoMode || piPaymentBusy || !canPiPay || balance <= 0;
+          spinning || autoMode || piPaymentBusy || !canPiPay || !sessionActive;
       }
       if (freeBtn) {
         freeBtn.hidden = isPiBrowserEnv();
         freeBtn.disabled = playLocked || spinning || autoMode || isPiBrowserEnv();
       }
+      const gameLocked = spinning || autoMode || piPaymentBusy;
       document.querySelectorAll(".bet-btn").forEach((b) => {
-        b.disabled = spinning || autoMode;
+        b.disabled = gameLocked || (isPiBrowserEnv() && !sessionActive);
       });
       document.querySelectorAll(".bank-preset").forEach((b) => {
-        b.disabled = spinning || autoMode;
+        b.disabled = gameLocked || (isPiBrowserEnv() && sessionActive);
       });
     }
 
-    async function depositPi() {
-      if (spinning || autoMode || piPaymentBusy) return;
+    /** U2A 결제 완료 후 백엔드 스테이킹 API — KR CASH 세션 시작 */
+    async function confirmStakeViaApi(piAmount, paymentId) {
+      const base = getPiBackendBase();
+      if (!base || !piAccessToken) {
+        throw new Error("스테이킹 API를 사용할 수 없습니다.");
+      }
+      const res = await fetch(`${base}/api/pi/stake`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(
+          piApiPayload({
+            accessToken: piAccessToken,
+            piAmount,
+            paymentId: paymentId || null,
+            rate: PI_TO_KR_RATE,
+          })
+        ),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success || !data.stake) {
+        throw new Error(data.error || "스테이킹 API 호출에 실패했습니다.");
+      }
+      return data.stake;
+    }
+
+    function applyStakeSession(stake) {
+      resetGameSession();
+      balance = stake.krAmount;
+      sessionKrDeposited = stake.krAmount;
+      sessionPiStaked = stake.piAmount;
+      krSessionEnded = false;
+      markPiDeposited();
+      saveBalance();
+      updateHud();
+      updateControls();
+    }
+
+    /**
+     * π 스테이킹 — U2A 결제 + /api/pi/stake → KR CASH
+     * @param {{ auto?: boolean }} options — auto: 로그인 직후 자동 스테이킹
+     */
+    async function stakePi(options = {}) {
+      const auto = !!options.auto;
+      if (spinning || autoMode || piPaymentBusy) {
+        return { success: false, skipped: true };
+      }
       if (!piClient.canPay()) {
-        messageEl.innerHTML = "π 입금은 <strong>Pi Browser</strong>에서만 가능합니다.";
-        messageEl.className = "message lose";
-        return;
+        if (!auto) {
+          messageEl.innerHTML = "π 스테이킹은 <strong>Pi Browser</strong>에서만 가능합니다.";
+          messageEl.className = "message lose";
+        }
+        return { success: false, error: "not Pi Browser" };
       }
       const base = getPiBackendBase();
       if (!base) {
-        messageEl.innerHTML = "백엔드 URL이 설정되지 않았습니다. <code>PI_BACKEND_URL</code> 또는 <code>PI_AUTH_VERIFY_URL</code>을 설정해 주세요.";
-        messageEl.className = "message lose";
-        return;
+        if (!auto) {
+          messageEl.innerHTML =
+            "백엔드 URL이 설정되지 않았습니다. <code>PI_BACKEND_URL</code> 또는 <code>PI_AUTH_VERIFY_URL</code>을 설정해 주세요.";
+          messageEl.className = "message lose";
+        }
+        return { success: false, error: "no backend" };
       }
 
       const { connected, accessToken } = getPiConnection();
       if (!connected || !accessToken) {
-        messageEl.innerHTML = "π 입금은 <strong>Pi 로그인 (결제 권한 포함)</strong> 후 이용할 수 있습니다.";
-        messageEl.className = "message lose";
-        return;
+        if (!auto) {
+          messageEl.innerHTML =
+            "π 스테이킹은 <strong>Pi 로그인 (결제 권한 포함)</strong> 후 이용할 수 있습니다.";
+          messageEl.className = "message lose";
+        }
+        return { success: false, error: "not connected" };
+      }
+      if (!isStakeDepositAllowed()) {
+        if (!auto) {
+          messageEl.innerHTML =
+            `KR 세션 진행 중입니다. KR이 모두 소진된 뒤 <strong>π 스테이킹</strong>을 이용해 주세요. (보유 ${balance.toLocaleString("ko-KR")} KR)`;
+          messageEl.className = "message lose";
+        }
+        return { success: false, skipped: true };
       }
 
       piPaymentBusy = true;
       updateControls();
-      Sfx.unlock();
-      Sfx.click();
+      if (!auto) {
+        Sfx.unlock();
+        Sfx.click();
+      }
 
       const piAmount = bankPiAmount;
       const krCredit = piToKr(piAmount);
       const sandbox = isPiSandboxMode();
-      messageEl.innerHTML =
-        `π 스테이킹 준비 중… <strong>${formatPi(piAmount)}</strong> · ${sandbox ? "테스트넷" : "메인넷"}`;
-      messageEl.className = "message";
+      if (!auto) {
+        messageEl.innerHTML =
+          `π 스테이킹 준비 중… <strong>${formatPi(piAmount)}</strong> · ${sandbox ? "테스트넷" : "메인넷"}`;
+        messageEl.className = "message";
+      }
 
       try {
         await warmPiBackend();
         await warmPiBackendPayments();
         startPaymentKeepAlive();
 
-        messageEl.innerHTML =
-          `지갑에서 π 스테이킹을 확인해 주세요… <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR</strong>`;
-        messageEl.className = "message";
+        if (!auto) {
+          messageEl.innerHTML =
+            `지갑에서 π 스테이킹을 확인해 주세요… <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR CASH</strong>`;
+          messageEl.className = "message";
+        }
 
         const pay = usePiPurchase({
           amount: piAmount,
@@ -2746,48 +2852,57 @@
             username: piUser?.username || null,
           },
         });
-        await pay.pay();
+        const paymentResult = await pay.pay();
+        const paymentId =
+          paymentResult?.identifier ||
+          paymentResult?.payment?.identifier ||
+          paymentResult?.paymentId ||
+          null;
 
-        resetGameSession();
-        balance = krCredit;
-        sessionKrDeposited = krCredit;
-        sessionPiStaked = piAmount;
-        krSessionEnded = false;
-        markPiDeposited();
-        saveBalance();
-        updateHud();
-        updateControls();
-        Sfx.deposit();
-        messageEl.innerHTML =
-          `π 스테이킹 완료 · <strong>${formatPi(piAmount)}</strong> → <strong>${krCredit.toLocaleString("ko-KR")} KR</strong> ` +
-          `(보유 ${balance.toLocaleString("ko-KR")} KR) — KR을 모두 사용할 때까지 플레이할 수 있습니다.`;
-        messageEl.className = "message win";
+        const stake = await confirmStakeViaApi(piAmount, paymentId);
+        applyStakeSession(stake);
+        if (!auto) Sfx.deposit();
+        if (!auto) {
+          messageEl.innerHTML =
+            `π 스테이킹 완료 · <strong>${formatPi(stake.piAmount)}</strong> → ` +
+            `<strong>${balance.toLocaleString("ko-KR")} KR CASH</strong> — SPIN · AUTO · 베팅 변경 가능`;
+          messageEl.className = "message win";
+        }
+        return { success: true, stake };
       } catch (err) {
         const msg = formatPiPaymentError(err);
-        let hint = "";
-        if (/payments.*scope|without.*payments|결제 권한/i.test(msg)) {
-          hint =
-            "<br><small><strong>Pi 로그인</strong> 팝업에서 username·payments(결제) 권한을 모두 허용한 뒤 다시 시도해 주세요.</small>";
-        } else if (/승인 시간|timeout|만료|expired|approve/i.test(msg)) {
-          hint =
-            "<br><small>테스트넷: Pi.init sandbox=<strong>" +
-            isPiSandboxMode() +
-            "</strong> · Render <strong>PI_SANDBOX_API_KEY</strong>(Testnet) 확인. 입금 전 서버가 깨어 있도록 잠시 후 재시도하세요.</small>";
-        } else if (/취소|cancel/i.test(msg)) {
-          hint = "<br><small>Pi Browser 결제 팝업에서 승인했는지 확인해 주세요.</small>";
-        } else if (isPiSandboxMode() && /approve|api key|502|503|payment_not_found/i.test(msg)) {
-          hint =
-            "<br><small>Render <strong>PI_SANDBOX_API_KEY</strong>(Developer Portal Testnet) 확인</small>";
+        const cancelled = /취소|cancel/i.test(msg);
+        if (!auto) {
+          let hint = "";
+          if (/payments.*scope|without.*payments|결제 권한/i.test(msg)) {
+            hint =
+              "<br><small><strong>Pi 로그인</strong> 팝업에서 username·payments(결제) 권한을 모두 허용한 뒤 다시 시도해 주세요.</small>";
+          } else if (/승인 시간|timeout|만료|expired|approve/i.test(msg)) {
+            hint =
+              "<br><small>테스트넷: Pi.init sandbox=<strong>" +
+              isPiSandboxMode() +
+              "</strong> · Render <strong>PI_SANDBOX_API_KEY</strong>(Testnet) 확인. 입금 전 서버가 깨어 있도록 잠시 후 재시도하세요.</small>";
+          } else if (cancelled) {
+            hint = "<br><small>Pi Browser 결제 팝업에서 승인했는지 확인해 주세요.</small>";
+          } else if (isPiSandboxMode() && /approve|api key|502|503|payment_not_found|stake/i.test(msg)) {
+            hint =
+              "<br><small>Render <strong>PI_SANDBOX_API_KEY</strong>(Developer Portal Testnet) 확인</small>";
+          }
+          messageEl.innerHTML = msg + hint;
+          messageEl.className = "message lose";
+          Sfx.lose();
         }
-        messageEl.innerHTML = msg + hint;
-        messageEl.className = "message lose";
-        Sfx.lose();
-        console.warn("Pi deposit:", err);
+        console.warn("Pi stake:", err);
+        return { success: false, error: msg, cancelled };
       } finally {
         stopPaymentKeepAlive();
         piPaymentBusy = false;
         updateControls();
       }
+    }
+
+    async function depositPi() {
+      await stakePi({ auto: false });
     }
 
     /** 게임 종료 버튼 — KR 잔액(당첨 포함) → π 본인 지갑 */

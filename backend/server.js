@@ -247,7 +247,7 @@ app.get("/validation-key.txt", (_req, res) => {
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    version: "2026-06-15a",
+    version: "2026-06-15b",
     pi: {
       stack: PI_STACK.backend,
       package: PI_STACK.backendPackage,
@@ -331,6 +331,60 @@ if (PI_API_KEY || PI_SANDBOX_API_KEY) {
   app.use(PI_STACK.paymentsBasePath, unavailable);
   app.use(PI_STACK.legacyPaymentsBasePath, unavailable);
 }
+
+/**
+ * POST /api/pi/stake
+ * π U2A 스테이킹 확인 — 선택 금액 → KR CASH 세션 시작
+ * Body: { accessToken, piAmount, paymentId?, rate?, sandbox? }
+ */
+app.post("/api/pi/stake", paymentLimiter, async (req, res) => {
+  const accessToken = req.body?.accessToken;
+  const piAmount = Number(req.body?.piAmount);
+  const paymentId = req.body?.paymentId || null;
+  const rate = Number(req.body?.rate) || PI_TO_KR_RATE;
+  const sandbox = !!req.body?.sandbox;
+
+  if (!accessToken || !Number.isFinite(piAmount) || piAmount <= 0) {
+    return res.status(400).json({
+      success: false,
+      error: "accessToken and positive piAmount required",
+    });
+  }
+
+  try {
+    const me = await verifyAccessToken(accessToken);
+    const krAmount = Math.floor(piAmount * rate);
+    safeWarn(
+      "[stake]",
+      sandbox ? "sandbox" : "main",
+      me.username || me.uid,
+      "pi",
+      piAmount,
+      "kr",
+      krAmount,
+      paymentId || "-"
+    );
+    return res.json({
+      success: true,
+      stake: {
+        piAmount,
+        krAmount,
+        rate,
+        paymentId,
+        uid: me.uid,
+        username: me.username || null,
+        sandbox,
+      },
+    });
+  } catch (err) {
+    const status = err.status || 502;
+    safeWarn("[stake]", status, err.message);
+    return res.status(status === 401 ? 401 : 502).json({
+      success: false,
+      error: publicError(err, "Stake failed"),
+    });
+  }
+});
 
 /**
  * POST /api/pi/session/settle
