@@ -247,7 +247,7 @@ app.get("/validation-key.txt", (_req, res) => {
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    version: "2026-06-15b",
+    version: "2026-06-15c",
     pi: {
       stack: PI_STACK.backend,
       package: PI_STACK.backendPackage,

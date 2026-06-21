@@ -31,11 +31,15 @@ async function postToPiServer(action, paymentId, body = {}, opts = {}) {
 
   let res;
   try {
-    res = await fetch(url, {
+    const fetchOpts = {
       method: "POST",
       body: JSON.stringify(body),
       headers,
-    });
+    };
+    if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
+      fetchOpts.signal = AbortSignal.timeout(15000);
+    }
+    res = await fetch(url, fetchOpts);
   } catch (err) {
     opts.logFail?.(`Pi server POST ${action} network error`, err);
     throw err;

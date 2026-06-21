@@ -1574,13 +1574,67 @@
     }
 
     let paymentKeepAliveTimer = null;
+    let backendReadyPromise = null;
+    let lastPiAuthAt = 0;
+
+    function pingPiBackendHealth() {
+      const base = getPiBackendBase();
+      if (!base) return Promise.resolve(false);
+      return fetch(`${base}/health`, { method: "GET", cache: "no-store" })
+        .then((res) => res.ok)
+        .catch(() => false);
+    }
+
+    function pingPiPaymentsWarmup() {
+      const bases = getPiU2ABases();
+      if (!bases.length) return Promise.resolve(false);
+      return fetch(`${bases[0]}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ paymentId: "__warmup__", sandbox: isPiSandboxMode() }),
+        cache: "no-store",
+      })
+        .then((res) => res.ok || res.status === 400 || res.status === 401 || res.status === 502)
+        .catch(() => false);
+    }
+
+    /** Render 콜드 스타트 방지 — 결제 팝업 전 서버·approve 경로 준비 */
+    async function ensurePiBackendReady(options = {}) {
+      const maxMs = options.maxMs ?? 45000;
+      const onProgress = options.onProgress;
+      if (backendReadyPromise && !options.force) {
+        return backendReadyPromise;
+      }
+      backendReadyPromise = (async () => {
+        const t0 = Date.now();
+        let attempt = 0;
+        while (Date.now() - t0 < maxMs) {
+          attempt += 1;
+          const healthOk = await pingPiBackendHealth();
+          const payOk = await pingPiPaymentsWarmup();
+          if (healthOk && payOk) return true;
+          if (onProgress) {
+            onProgress(attempt, Date.now() - t0, healthOk, payOk);
+          }
+          await new Promise((r) => setTimeout(r, Math.min(1500 + attempt * 400, 4000)));
+        }
+        return false;
+      })();
+      try {
+        return await backendReadyPromise;
+      } finally {
+        backendReadyPromise = null;
+      }
+    }
 
     function startPaymentKeepAlive() {
       stopPaymentKeepAlive();
-      warmPiBackend().catch(() => {});
+      pingPiBackendHealth().catch(() => {});
+      pingPiPaymentsWarmup().catch(() => {});
       paymentKeepAliveTimer = setInterval(() => {
-        warmPiBackend().catch(() => {});
-      }, 8000);
+        pingPiBackendHealth().catch(() => {});
+        pingPiPaymentsWarmup().catch(() => {});
+      }, 4000);
     }
 
     function stopPaymentKeepAlive() {
@@ -1623,7 +1677,7 @@
         ...body,
         sandbox: body?.sandbox ?? isPiSandboxMode(),
       };
-      const maxAttempts = pathKey === "approve" ? 3 : 2;
+      const maxAttempts = pathKey === "approve" ? 6 : 2;
 
       let lastError = null;
       for (let i = 0; i < bases.length; i++) {
@@ -1634,14 +1688,19 @@
               method: "POST",
               headers: { "Content-Type": "application/json", Accept: "application/json" },
               body: JSON.stringify(payload),
+              cache: "no-store",
             });
             const data = await res.json().catch(() => ({}));
             if (res.status === 404 && i < bases.length - 1) {
               lastError = new Error(data.error || `π 결제 ${pathKey} 404`);
               break;
             }
-            if ((res.status === 502 || res.status === 503) && attempt < maxAttempts - 1) {
-              await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+            const retryStatus =
+              res.status === 502 || res.status === 503 || res.status === 504 || res.status === 408;
+            if (retryStatus && attempt < maxAttempts - 1) {
+              await pingPiBackendHealth().catch(() => {});
+              await pingPiPaymentsWarmup().catch(() => {});
+              await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
               continue;
             }
             if (!res.ok || data.success === false) {
@@ -1653,9 +1712,11 @@
             const retryable =
               pathKey === "approve" &&
               attempt < maxAttempts - 1 &&
-              /failed to fetch|502|503|network/i.test(err?.message || "");
+              /failed to fetch|502|503|504|408|network|timeout/i.test(err?.message || "");
             if (retryable) {
-              await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+              await pingPiBackendHealth().catch(() => {});
+              await pingPiPaymentsWarmup().catch(() => {});
+              await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
               continue;
             }
             if (i < bases.length - 1 && /404/.test(err?.message || "")) break;
@@ -1666,37 +1727,14 @@
       throw lastError || new Error(`π 결제 ${pathKey} 실패`);
     }
 
-    /** Render 콜드 스타트 방지 — approve 타임아웃 전에 서버 깨우기 */
+    /** @deprecated ensurePiBackendReady 사용 */
     async function warmPiBackend() {
-      const base = getPiBackendBase();
-      if (!base) return false;
-      for (let i = 0; i < 3; i++) {
-        try {
-          const res = await fetch(`${base}/health`, { method: "GET" });
-          if (res.ok) return true;
-        } catch (_) {}
-        await new Promise((r) => setTimeout(r, 800 * (i + 1)));
-      }
-      return false;
+      return ensurePiBackendReady({ maxMs: 12000 });
     }
 
-    /** 결제 라우터 워밍 — approve 경로 미리 깨우기 */
+    /** @deprecated ensurePiBackendReady 사용 */
     async function warmPiBackendPayments() {
-      const bases = getPiU2ABases();
-      if (!bases.length) return false;
-      for (let i = 0; i < 2; i++) {
-        try {
-          const res = await fetch(`${bases[0]}/approve`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Accept: "application/json" },
-            body: JSON.stringify({ paymentId: "__warmup__", sandbox: isPiSandboxMode() }),
-          });
-          if (res.ok || res.status === 200) return true;
-          if (res.status === 400 || res.status === 401 || res.status === 502) return true;
-        } catch (_) {}
-        await new Promise((r) => setTimeout(r, 600));
-      }
-      return false;
+      return pingPiPaymentsWarmup();
     }
 
     /**
@@ -1883,6 +1921,7 @@
 
           piAccessToken = auth.accessToken;
           piUser = verifiedUser;
+          lastPiAuthAt = Date.now();
           savePiSession({
             accessToken: auth.accessToken,
             user: verifiedUser,
@@ -1902,13 +1941,14 @@
         }
       }
 
-      /** π 입금 — payments 확보 (depositPi에서 connectPi 후에는 즉시 반환) */
+      /** π 입금 — payments 확보 (로그인 직후 재인증 방지) */
       async ensurePaymentsAuth() {
+        const recentAuth = Date.now() - lastPiAuthAt < 15000;
         if (
-          this.paymentsScopeGranted &&
+          (this.paymentsScopeGranted || recentAuth) &&
           this.accessToken &&
           this.user &&
-          piClient.connected
+          (piClient.connected || piConnected)
         ) {
           return { success: true, accessToken: this.accessToken, user: this.user };
         }
@@ -2069,7 +2109,20 @@
         async pay() {
           if (!piService) throw new Error("Pi SDK 준비 중입니다.");
           await piClient.ensureReady();
-          let payAuth = await piService.ensurePaymentsAuth();
+          let payAuth;
+          if (
+            piService.accessToken &&
+            piService.user &&
+            (piService.paymentsScopeGranted || Date.now() - lastPiAuthAt < 15000)
+          ) {
+            payAuth = {
+              success: true,
+              accessToken: piService.accessToken,
+              user: piService.user,
+            };
+          } else {
+            payAuth = await piService.ensurePaymentsAuth();
+          }
           if (!payAuth.success) {
             throw new Error(payAuth.error || "π 결제를 위해 payments 권한이 필요합니다.");
           }
@@ -2286,9 +2339,28 @@
         piClient.canPay()
       ) {
         messageEl.innerHTML =
-          `Pi 인증 완료 · <strong>${name}</strong>님 · ` +
-          `<strong>${formatPi(bankPiAmount)}</strong> 스테이킹 API 호출 중…${uidHint}`;
+          `Pi 인증 완료 · <strong>${name}</strong>님 · 서버 준비 중… (최초 실행 시 30초 소요)${uidHint}`;
         messageEl.className = "message";
+        const serverReady = await ensurePiBackendReady({
+          onProgress(attempt, elapsed) {
+            if (attempt % 2 === 0) {
+              messageEl.innerHTML =
+                `Pi 인증 완료 · 서버 연결 중… <strong>${Math.round(elapsed / 1000)}초</strong> · ` +
+                `준비 후 <strong>${formatPi(bankPiAmount)}</strong> 스테이킹${uidHint}`;
+            }
+          },
+        });
+        if (!serverReady) {
+          messageEl.innerHTML =
+            `Pi 인증 완료 · 서버 연결 지연${uidHint}<br>` +
+            `<strong>π 스테이킹 · KR 받기</strong> 버튼을 30초 후 다시 눌러 주세요.`;
+          messageEl.className = "message lose";
+          return;
+        }
+        messageEl.innerHTML =
+          `서버 준비 완료 · <strong>${formatPi(bankPiAmount)}</strong> 스테이킹 결제를 시작합니다…${uidHint}`;
+        messageEl.className = "message";
+        await new Promise((r) => setTimeout(r, 400));
         const result = await stakePi({ auto: true });
         if (result?.success) {
           messageEl.innerHTML =
@@ -2345,6 +2417,9 @@
         }
         piSdkReady = true;
         syncPiConnectionState({ ready: true });
+        if (PiClient.isBrowserReady()) {
+          ensurePiBackendReady({ maxMs: 30000 }).catch(() => {});
+        }
         const saved = loadPiSession();
         if (saved?.accessToken && piClient._initDone) {
           try {
@@ -2364,6 +2439,7 @@
             piService.accessToken = auth.accessToken;
             piService.user = verifiedUser;
             piService.paymentsScopeGranted = restoreScopes.includes("payments");
+            lastPiAuthAt = Date.now();
             await piService.resolveIncompletePayment(auth.accessToken);
             savePiSession({
               accessToken: auth.accessToken,
@@ -2823,15 +2899,17 @@
       const piAmount = bankPiAmount;
       const krCredit = piToKr(piAmount);
       const sandbox = isPiSandboxMode();
-      if (!auto) {
-        messageEl.innerHTML =
-          `π 스테이킹 준비 중… <strong>${formatPi(piAmount)}</strong> · ${sandbox ? "테스트넷" : "메인넷"}`;
-        messageEl.className = "message";
-      }
 
       try {
-        await warmPiBackend();
-        await warmPiBackendPayments();
+        if (!auto) {
+          messageEl.innerHTML =
+            `서버 준비 중… <strong>${formatPi(piAmount)}</strong> · ${sandbox ? "테스트넷" : "메인넷"}`;
+          messageEl.className = "message";
+        }
+        const serverReady = await ensurePiBackendReady({ maxMs: auto ? 20000 : 45000 });
+        if (!serverReady) {
+          throw new Error("백엔드 서버 준비 시간이 초과되었습니다. 30초 후 다시 시도해 주세요.");
+        }
         startPaymentKeepAlive();
 
         if (!auto) {
